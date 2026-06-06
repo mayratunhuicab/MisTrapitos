@@ -1,0 +1,69 @@
+
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    function isAuth() {
+      return request.auth != null;
+    }
+
+    function hasRole(role) {
+        // La base de datos debe ser la predeterminada.
+        // No se puede usar la variable {database} en las reglas de Storage.
+        return exists(/databases/(default)/documents/roles_admin/$(request.auth.uid)) &&
+               get(/databases/(default)/documents/roles_admin/$(request.auth.uid)).data.role == role;
+    }
+    
+    function hasNoRoleDoc() {
+        return !exists(/databases/(default)/documents/roles_admin/$(request.auth.uid));
+    }
+
+    function isAdmin() {
+      // Un administrador tiene el 'claim' de 'admin', o un UID específico, o el rol en la BD.
+      return isAuth() && (
+        request.auth.token.admin == true || 
+        request.auth.uid == 'Lg46hrbRMkeeSyFcXGMVXg9voRP2' ||
+        hasRole('admin')
+      );
+    }
+
+    function isEmpleado() {
+      // Un empleado tiene el 'claim' de 'empleado', o el rol en la BD, o ningún documento de rol (por defecto).
+      return isAuth() && (
+        request.auth.token.empleado == true ||
+        hasRole('empleado') ||
+        (hasNoRoleDoc() && !isAdmin())
+      );
+    }
+
+    // Reglas para las fotos de perfil
+    match /profile-pictures/{userId} {
+      // Cualquiera puede leer las fotos de perfil.
+      allow read;
+      
+      // Solo el usuario autenticado puede escribir su propia foto.
+      allow write: if request.auth != null && request.auth.uid == userId
+                      && request.resource.size < 2 * 1024 * 1024 
+                      && request.resource.contentType.matches('image/.*');
+    }
+
+    // Reglas para la carpeta 'comprobantes' de ventas directas
+    match /comprobantes/{ventaId} {
+      allow create: if (isAdmin() || isEmpleado())
+                      && request.resource.size < 5 * 1024 * 1024
+                      && request.resource.contentType.matches('image/.*');
+      allow read: if isAdmin() || isEmpleado();
+      allow delete: if isAdmin();
+    }
+    
+    // Reglas para la carpeta de comprobantes de apartados
+    match /comprobantes_apartado/{fileId} {
+      allow create: if (isAdmin() || isEmpleado())
+                      && request.resource.size < 5 * 1024 * 1024
+                      && request.resource.contentType.matches('image/.*');
+      allow read: if isAdmin() || isEmpleado();
+      allow delete: if isAdmin();
+    }
+  }
+}

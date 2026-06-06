@@ -1,0 +1,134 @@
+
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // -- Helper Functions --
+    function isAuth() {
+      return request.auth != null;
+    }
+
+    function hasRole(role) {
+        return exists(/databases/$(database)/documents/roles_admin/$(request.auth.uid)) &&
+               get(/databases/$(database)/documents/roles_admin/$(request.auth.uid)).data.role == role;
+    }
+    
+    function hasNoRoleDoc() {
+        return !exists(/databases/$(database)/documents/roles_admin/$(request.auth.uid));
+    }
+
+    function isAdmin() {
+      // An admin has the 'admin' custom claim, OR the hardcoded admin UID, OR the 'admin' role in the database.
+      return isAuth() && (
+        request.auth.token.admin == true || 
+        request.auth.uid == 'Lg46hrbRMkeeSyFcXGMVXg9voRP2' ||
+        hasRole('admin')
+      );
+    }
+
+    function isEmpleado() {
+      // An employee has the 'empleado' custom claim, OR the 'empleado' role in the database, OR no role document (default).
+      return isAuth() && (
+        request.auth.token.empleado == true ||
+        hasRole('empleado') ||
+        (hasNoRoleDoc() && !isAdmin())
+      );
+    }
+    
+    // Role management for the app.
+    match /roles_admin/{userId} {
+      // Admins can read the whole collection and write to any document.
+      allow read, write: if isAdmin();
+      // An authenticated user can get their own role document for the login fallback mechanism.
+      allow get: if isAuth() && request.auth.uid == userId;
+    }
+
+    // -- Collection Group Rules --
+
+    // This rule is REQUIRED for the search bar on the sales page to work.
+    match /{path=**}/prendas/{prendaId} {
+      allow read, update: if isAdmin() || isEmpleado();
+    }
+
+    // This rule is REQUIRED for the Dashboard to calculate earnings and
+    // recovered amounts for each bale.
+    match /{path=**}/items/{itemId} {
+      allow read: if isAdmin() || isEmpleado();
+    }
+
+    // This rule is REQUIRED for the financial reports to correctly calculate
+    // income from layaway payments.
+    match /{path=**}/pagos/{pagoId} {
+      allow read: if isAdmin() || isEmpleado();
+    }
+    
+    // -- Main Collection Rules --
+
+    // Rules for 'pacas' collection
+    match /pacas/{pacaId} {
+      // Admins can read and write. Employees can only read for sales functionality.
+      allow read: if isAdmin() || isEmpleado();
+      allow write: if isAdmin();
+      
+      // Rules for 'prendas' subcollection
+      match /prendas/{prendaId} {
+        // Admin can do anything.
+        allow read, write: if isAdmin();
+        // Employee can read (for searching) and update (to decrease stock when selling).
+        allow update: if isEmpleado();
+      }
+    }
+    
+    // Rules for 'ventas' collection
+    match /ventas/{ventaId} {
+      // Admins and employees can create and read sales.
+      allow read, create: if isAdmin() || isEmpleado();
+      // Only admins can modify or delete sales.
+      allow update, delete: if isAdmin();
+
+      // Rules for 'items' subcollection within a sale
+      match /items/{itemId} {
+        // Same rules as the parent sale.
+        allow read, create: if isAdmin() || isEmpleado();
+        allow update, delete: if isAdmin();
+      }
+    }
+
+    // Rules for 'gastos' collection
+    match /gastos/{gastoId} {
+      // Admins and employees can manage expenses.
+      allow read, write: if isAdmin() || isEmpleado();
+    }
+
+    // Rules for 'apartados' collection
+    match /apartados/{apartadoId} {
+      allow read, write: if isAdmin() || isEmpleado();
+
+      // Rules for 'items' subcollection
+      match /items/{itemId} {
+        allow read, write: if isAdmin() || isEmpleado();
+      }
+
+      // Rules for 'pagos' subcollection
+      match /pagos/{pagoId} {
+        allow read, create: if isAdmin() || isEmpleado();
+        allow update, delete: if false; // Payments are immutable
+      }
+    }
+
+    // Rules for 'app_config' collection for global settings
+    match /app_config/settings {
+        // Any authenticated user can read the settings (needed for forms).
+        allow read: if isAuth();
+        // Only admins can change the settings.
+        allow write: if isAdmin();
+    }
+
+    // Rules for 'clientes' collection
+    match /clientes/{clienteId} {
+      // Admins and employees can manage clients.
+      allow read, write: if isAdmin() || isEmpleado();
+    }
+  }
+} 

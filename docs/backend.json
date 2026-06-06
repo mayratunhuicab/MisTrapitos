@@ -1,0 +1,421 @@
+
+{
+  "entities": {
+    "Role": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "Role",
+      "type": "object",
+      "description": "Represents a user role within the StyleTrack application. This is now managed via Custom Claims.",
+      "properties": {
+        "email": {
+          "type": "string",
+          "description": "Email address of the user.",
+          "format": "email"
+        },
+        "role": {
+          "type": "string",
+          "description": "The role assigned to the user as a custom claim.",
+          "enum": ["admin", "empleado"]
+        }
+      },
+      "required": [
+        "email",
+        "role"
+      ]
+    },
+    "Paca": {
+      "title": "Paca",
+      "type": "object",
+      "description": "Represents a bale of clothes in the inventory.",
+      "properties": {
+        "idPersonalizado": {
+          "type": "string",
+          "description": "Custom sequential ID for the bale (e.g., P1, P2)."
+        },
+        "nombrePaca": {
+          "type": "string",
+          "description": "Name of the bale."
+        },
+        "etiqueta": {
+          "type": "string",
+          "description": "Tag or label for the bale."
+        },
+        "proveedor": {
+          "type": "string",
+          "description": "Supplier of the bale."
+        },
+        "costoPaca": {
+          "type": "number",
+          "description": "Cost of the bale."
+        },
+        "costoEnvio": {
+          "type": "number",
+          "description": "Shipping cost for the bale."
+        },
+        "cantidadPrendas": {
+          "type": "number",
+          "description": "Number of garments in the bale."
+        },
+        "fecha": {
+          "type": "string",
+          "format": "date-time",
+          "description": "The date the bale was received."
+        },
+        "ventaTotalPotencial": {
+          "type": "number",
+          "description": "The potential total sale amount for all garments in the bale."
+        },
+        "colorEtiqueta": {
+            "type": "string",
+            "description": "The hex color code for the bale's labels."
+        },
+        "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Timestamp when the document was created."
+        },
+        "inventarioCompleto": {
+            "type": "boolean",
+            "description": "Flag to indicate if the initial inventory for this bale has been fully registered."
+        },
+        "prendaNextId": {
+            "type": "number",
+            "description": "The next sequential ID to use for a new garment group in this bale."
+        },
+        "observaciones": {
+            "type": "string",
+            "description": "Optional notes or observations about the bale."
+        }
+      },
+      "required": [
+        "idPersonalizado",
+        "nombrePaca",
+        "etiqueta",
+        "proveedor",
+        "costoPaca",
+        "cantidadPrendas",
+        "fecha",
+        "createdAt"
+      ]
+    },
+    "Prenda": {
+      "title": "Prenda",
+      "type": "object",
+      "description": "Represents a single garment or a group of identical garments within a paca.",
+      "properties": {
+        "idPersonalizado": {
+          "type": "string",
+          "description": "Custom sequential ID for the garment group (e.g., P1-1, P1-2)."
+        },
+        "tipoPrenda": {
+          "type": "string",
+          "description": "Type of the garment (e.g., 'CAMISA', 'PANTALON')."
+        },
+        "talla": {
+          "type": "string",
+          "description": "Size of the garment (e.g., 'S', 'M', 'L', 'Única'). Can be disabled by admin."
+        },
+        "genero": {
+          "type": "string",
+          "description": "Gender for the garment (e.g., 'DAMA', 'CABALLERO', 'UNISEX').",
+          "enum": ["DAMA", "CABALLERO", "NIÑO", "NIÑA", "JUVENIL DAMA", "JUVENIL CABALLERO", "UNISEX"]
+        },
+        "precioVenta": {
+          "type": "number",
+          "description": "The effective unit selling price, calculated from an offer if one exists."
+        },
+        "precioIndividual": {
+          "type": "number",
+          "description": "The price for a single item if sold outside of an offer. Required if an offer is set."
+        },
+        "ofertaCantidad": {
+          "type": "number",
+          "description": "The number of items in a bulk offer (e.g., 2 in a '2 for $100' deal)."
+        },
+        "ofertaPrecio": {
+          "type": "number",
+          "description": "The total price for a bulk offer (e.g., 100 in a '2 for $100' deal)."
+        },
+        "cantidad": {
+          "type": "number",
+          "description": "Number of identical items in this group. Defaults to 1."
+        },
+        "pacaId": {
+          "type": "string",
+          "description": "The ID of the paca this garment belongs to."
+        },
+        "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Timestamp when the document was created."
+        }
+      },
+      "required": [
+        "idPersonalizado",
+        "tipoPrenda",
+        "genero",
+        "precioVenta",
+        "cantidad",
+        "pacaId",
+        "createdAt"
+      ]
+    },
+     "Venta": {
+      "title": "Venta",
+      "type": "object",
+      "description": "Represents a single sales transaction.",
+      "properties": {
+        "totalVenta": {
+          "type": "number",
+          "description": "The total amount of the sale."
+        },
+        "metodoPago": {
+          "type": "string",
+          "description": "Payment method used for the sale.",
+          "enum": ["EFECTIVO", "TRANSFERENCIA"]
+        },
+        "fecha": {
+          "type": "string",
+          "format": "date-time",
+          "description": "The date and time of the sale."
+        },
+        "comprobanteUrl": {
+          "type": "string",
+          "format": "uri",
+          "description": "URL to the uploaded payment proof image in Firebase Storage."
+        }
+      },
+      "required": [
+        "totalVenta",
+        "metodoPago",
+        "fecha"
+      ]
+    },
+    "VentaItem": {
+      "title": "VentaItem",
+      "type": "object",
+      "description": "Represents a single item within a sale, linking to a Prenda.",
+      "properties": {
+        "prendaId": {
+          "type": "string",
+          "description": "The ID of the Prenda document."
+        },
+        "pacaId": {
+          "type": "string",
+          "description": "The ID of the Paca the Prenda belongs to."
+        },
+        "idPersonalizado": {
+          "type": "string",
+          "description": "The custom ID of the garment sold."
+        },
+        "cantidad": {
+          "type": "number",
+          "description": "The quantity of this item sold in the transaction."
+        },
+        "precioVenta": {
+          "type": "number",
+          "description": "The selling price of the item at the time of sale."
+        },
+        "tipoPrenda": {
+          "type": "string",
+          "description": "The type of the garment sold."
+        }
+      },
+      "required": [
+        "prendaId",
+        "pacaId",
+        "idPersonalizado",
+        "cantidad",
+        "precioVenta",
+        "tipoPrenda"
+      ]
+    },
+    "Gasto": {
+      "title": "Gasto",
+      "type": "object",
+      "description": "Represents a business expense.",
+      "properties": {
+        "descripcion": {
+          "type": "string",
+          "description": "Description of the expense."
+        },
+        "monto": {
+          "type": "number",
+          "description": "The amount of the expense."
+        },
+        "fecha": {
+          "type": "string",
+          "format": "date-time",
+          "description": "The date and time of the expense."
+        },
+        "metodoPago": {
+            "type": "string",
+            "description": "The payment method used for the expense.",
+            "enum": ["EFECTIVO", "TRANSFERENCIA"]
+        }
+      },
+      "required": ["descripcion", "monto", "fecha", "metodoPago"]
+    },
+    "AppConfig": {
+        "title": "AppConfig",
+        "type": "object",
+        "description": "Stores global application configuration settings.",
+        "properties": {
+            "isTallaEnabled": {
+                "type": "boolean",
+                "description": "If true, the 'talla' (size) field is enabled for garments. Defaults to true."
+            }
+        },
+        "required": ["isTallaEnabled"]
+    },
+    "Cliente": {
+      "title": "Cliente",
+      "type": "object",
+      "description": "Represents a customer of the store.",
+      "properties": {
+        "nombre": {
+          "type": "string",
+          "description": "Full name of the client."
+        },
+        "telefono": {
+          "type": "string",
+          "description": "Client's phone number for notifications."
+        },
+        "notas": {
+          "type": "string",
+          "description": "Notes about what the client is looking for (e.g., specific garments, sizes)."
+        },
+        "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Timestamp when the client was added."
+        }
+      },
+      "required": ["nombre", "telefono", "createdAt"]
+    },
+    "Apartado": {
+      "title": "Apartado",
+      "type": "object",
+      "description": "Represents a layaway plan for a client.",
+      "properties": {
+        "clienteNombre": { "type": "string", "description": "Name of the client." },
+        "clienteTelefono": { "type": "string", "description": "Phone number of the client." },
+        "vendedorId": { "type": "string", "description": "ID of the user who created the layaway." },
+        "fechaCreacion": { "type": "string", "format": "date-time" },
+        "fechaVencimiento": { "type": "string", "format": "date-time" },
+        "totalApartado": { "type": "number" },
+        "totalPagado": { "type": "number", "description": "The sum of all payments made." },
+        "estado": { "type": "string", "enum": ["VIGENTE", "LIQUIDADO", "CANCELADO"] },
+        "archivado": { "type": "boolean", "description": "Flag to indicate if the layaway is archived and hidden from the main view." },
+        "fechaLiquidacion": { "type": "string", "format": "date-time", "description": "Timestamp when the layaway was fully paid." }
+      },
+      "required": ["clienteNombre", "clienteTelefono", "vendedorId", "fechaCreacion", "fechaVencimiento", "totalApartado", "totalPagado", "estado"]
+    },
+    "ApartadoItem": {
+      "title": "ApartadoItem",
+      "type": "object",
+      "description": "Represents an item within a layaway plan.",
+      "properties": {
+        "prendaId": { "type": "string" },
+        "pacaId": { "type": "string" },
+        "idPersonalizado": { "type": "string" },
+        "cantidad": { "type": "number" },
+        "precioVenta": { "type": "number" },
+        "tipoPrenda": { "type": "string" }
+      },
+      "required": ["prendaId", "pacaId", "idPersonalizado", "cantidad", "precioVenta", "tipoPrenda"]
+    },
+    "Pago": {
+        "title": "Pago",
+        "type": "object",
+        "description": "Represents a single payment (abono) for a layaway plan.",
+        "properties": {
+            "monto": { "type": "number" },
+            "fecha": { "type": "string", "format": "date-time" },
+            "metodoPago": { "type": "string", "enum": ["EFECTIVO", "TRANSFERENCIA"] },
+            "vendedorId": { "type": "string" },
+            "comprobanteUrl": { "type": "string", "format": "uri" }
+        },
+        "required": ["monto", "fecha", "metodoPago", "vendedorId"]
+    }
+  },
+  "auth": {
+    "providers": ["password"],
+    "customClaims": {
+        "admin": {
+            "type": "boolean"
+        },
+        "empleado": {
+            "type": "boolean"
+        }
+    }
+  },
+  "firestore": {
+    "/roles_admin/{userId}": {
+      "schema": {
+        "$ref": "#/entities/Role"
+      },
+      "description": "Manages user roles. This collection is used by the app to grant 'admin' or 'empleado' permissions as a fallback to Custom Claims."
+    },
+    "/pacas/{pacaId}": {
+        "schema": {
+            "$ref": "#/entities/Paca"
+        },
+        "description": "Collection to store all the bales of clothes."
+    },
+    "/pacas/{pacaId}/prendas/{prendaId}": {
+      "schema": {
+        "$ref": "#/entities/Prenda"
+      },
+      "description": "Subcollection to store individual garments for a specific paca."
+    },
+    "/ventas/{ventaId}": {
+      "schema": {
+        "$ref": "#/entities/Venta"
+      },
+      "description": "Collection to store all sales transactions."
+    },
+    "/ventas/{ventaId}/items/{itemId}": {
+      "schema": {
+        "$ref": "#/entities/VentaItem"
+      },
+      "description": "Subcollection to store the individual items sold in a transaction."
+    },
+    "/gastos/{gastoId}": {
+      "schema": {
+        "$ref": "#/entities/Gasto"
+      },
+      "description": "Collection to store all business expenses."
+    },
+    "/app_config/settings": {
+        "schema": {
+            "$ref": "#/entities/AppConfig"
+        },
+        "description": "Stores global application settings, like feature flags."
+    },
+    "/clientes/{clienteId}": {
+      "schema": {
+        "$ref": "#/entities/Cliente"
+      },
+      "description": "Collection to store all clients."
+    },
+    "/apartados/{apartadoId}": {
+        "schema": {
+            "$ref": "#/entities/Apartado"
+        },
+        "description": "Collection to store all layaway plans."
+    },
+    "/apartados/{apartadoId}/items/{itemId}": {
+      "schema": {
+        "$ref": "#/entities/ApartadoItem"
+      },
+      "description": "Subcollection to store the individual items in a layaway plan."
+    },
+    "/apartados/{apartadoId}/pagos/{pagoId}": {
+      "schema": {
+        "$ref": "#/entities/Pago"
+      },
+      "description": "Subcollection to store individual payments for a specific layaway."
+    }
+  }
+}

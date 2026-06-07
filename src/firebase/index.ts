@@ -2,10 +2,10 @@
 
 import { firebaseConfig } from '@/firebase/config';
 import { initializeApp, getApps, getApp, FirebaseApp } from 'firebase/app';
-import { getAuth } from 'firebase/auth';
+import { initializeAuth, getAuth, inMemoryPersistence, browserLocalPersistence } from 'firebase/auth';
 import { getFirestore, initializeFirestore } from 'firebase/firestore';
 import { getStorage } from 'firebase/storage';
-import { FirebaseErrorListener } from '@/components/FirebaseErrorListener';
+
 
 // IMPORTANT: DO NOT MODIFY THIS FUNCTION
 export function initializeFirebase() {
@@ -31,9 +31,20 @@ export function getSdks(firebaseApp: FirebaseApp) {
     firestore = getFirestore(firebaseApp);
   }
 
+  let auth;
+  try {
+    const ls = (globalThis as Record<string, unknown>)['localStorage'];
+    const isLocalStorageAvailable = ls !== undefined && typeof (ls as { getItem?: unknown }).getItem === 'function';
+    const persistence = isLocalStorageAvailable ? browserLocalPersistence : inMemoryPersistence;
+    auth = initializeAuth(firebaseApp, { persistence });
+  } catch {
+    // Auth already initialized (e.g., HMR or subsequent calls)
+    auth = getAuth(firebaseApp);
+  }
+
   return {
     firebaseApp,
-    auth: getAuth(firebaseApp),
+    auth,
     firestore,
     storage: getStorage(firebaseApp)
   };

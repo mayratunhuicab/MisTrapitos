@@ -282,7 +282,7 @@ export default function ClientsPage() {
                                                     </AlertDialogHeader>
                                                     <AlertDialogFooter>
                                                         <AlertDialogCancel disabled={isSubmitting}>Cancelar</AlertDialogCancel>
-                                                        <AlertDialogAction onClick={() => handleDeleteCliente(cliente.id)} disabled={isSubmitting} variant="destructive">
+                                                        <AlertDialogAction onClick={() => handleDeleteCliente(cliente.id)} disabled={isSubmitting} className="bg-red-600 text-white hover:bg-red-700">
                                                             {isSubmitting ? "Eliminando..." : "Sí, eliminar"}
                                                         </AlertDialogAction>
                                                     </AlertDialogFooter>

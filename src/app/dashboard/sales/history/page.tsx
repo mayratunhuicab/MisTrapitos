@@ -462,18 +462,18 @@ const handleDeleteSale = async (ventaId: string) => {
       doc.setFontSize(14);
       doc.text(title, 14, finalY + 15);
 
-      const body = sales.flatMap(venta => {
+      const body: Array<Array<any>> = sales.flatMap(venta => {
           const ventaItems = allItemsMap.get(venta.id) || [];
-          const mainRow = [
-              { content: `ID: ${venta.id.substring(0, 6).toUpperCase()} | Hora: ${format(new Date(venta.fecha.seconds * 1000), "HH:mm")}`, colSpan: 3, styles: { fontStyle: 'bold', fillColor: '#f0f0f0' } },
-              { content: `$${venta.totalVenta.toFixed(2)}`, styles: { fontStyle: 'bold', halign: 'right', fillColor: '#f0f0f0' } },
+          const mainRow: Array<any> = [
+              { content: `ID: ${venta.id.substring(0, 6).toUpperCase()} | Hora: ${format(new Date(venta.fecha.seconds * 1000), "HH:mm")}`, colSpan: 3, styles: { fontStyle: 'bold' as const, fillColor: '#f0f0f0' as const } },
+              { content: `$${venta.totalVenta.toFixed(2)}`, styles: { fontStyle: 'bold' as const, halign: 'right' as const, fillColor: '#f0f0f0' as const } },
           ];
           
-          const itemRows = ventaItems.map(item => [
-              { content: `  - ${item.idPersonalizado} ${item.tipoPrenda}`, styles: { cellPadding: {left: 4} } },
-              { content: `${item.cantidad} x $${item.precioVenta.toFixed(2)}`, halign: 'center' },
-              '', // Empty cell to align with total
-              { content: `$${(item.cantidad * item.precioVenta).toFixed(2)}`, halign: 'right' },
+          const itemRows: Array<Array<any>> = ventaItems.map(item => [
+              { content: `  - ${item.idPersonalizado} ${item.tipoPrenda}`, styles: { cellPadding: { left: 4 } } },
+              { content: `${item.cantidad} x $${item.precioVenta.toFixed(2)}`, halign: 'center' as const },
+              '',
+              { content: `$${(item.cantidad * item.precioVenta).toFixed(2)}`, halign: 'right' as const },
           ]);
 
           return [mainRow, ...itemRows];
@@ -688,7 +688,7 @@ const handleDeleteSale = async (ventaId: string) => {
                                 </AlertDialogHeader>
                                 <AlertDialogFooter>
                                 <AlertDialogCancel disabled={isDeleting}>Cancelar</AlertDialogCancel>
-                                <AlertDialogAction onClick={() => handleDeleteSale(venta.id)} disabled={isDeleting} variant="destructive">
+                                <AlertDialogAction onClick={() => handleDeleteSale(venta.id)} disabled={isDeleting} className="bg-red-600 text-white hover:bg-red-700">
                                     {isDeleting ? 'Eliminando...' : 'Sí, eliminar venta'}
                                 </AlertDialogAction>
                                 </AlertDialogFooter>

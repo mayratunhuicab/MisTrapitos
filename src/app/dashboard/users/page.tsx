@@ -280,7 +280,7 @@ export default function UsersPage() {
                                                     </AlertDialogHeader>
                                                     <AlertDialogFooter>
                                                         <AlertDialogCancel disabled={isSubmitting}>Cancelar</AlertDialogCancel>
-                                                        <AlertDialogAction onClick={() => handleDeleteRole(role.id)} disabled={isSubmitting} variant="destructive">
+                                                        <AlertDialogAction onClick={() => handleDeleteRole(role.id)} disabled={isSubmitting} className="bg-red-600 text-white hover:bg-red-700">
                                                             {isSubmitting ? "Eliminando..." : "Sí, eliminar rol"}
                                                         </AlertDialogAction>
                                                     </AlertDialogFooter>

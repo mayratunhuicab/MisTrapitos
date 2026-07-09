@@ -638,7 +638,7 @@ const { data: todasPrendas, isLoading: isPrendasLoading } = useCollection<Prenda
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel onClick={() => setSelectedPaca(null)} disabled={isSubmitting}>Cancelar</AlertDialogCancel>
-            <AlertDialogAction onClick={() => handleDelete(selectedPaca!.id)} variant="destructive" className="font-sans text-sm" disabled={isSubmitting}>
+            <AlertDialogAction onClick={() => handleDelete(selectedPaca!.id)} className="font-sans text-sm bg-red-600 text-white hover:bg-red-700" disabled={isSubmitting}>
               {isSubmitting ? 'Eliminando...' : 'Sí, eliminar paca'}
             </AlertDialogAction>
           </AlertDialogFooter>

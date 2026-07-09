@@ -587,9 +587,9 @@ export default function PacaDetailPage() {
                 prendaPayload.ofertaCantidad = Number(bulkQuantity);
                 prendaPayload.ofertaPrecio = Number(bulkPrice);
             } else {
-                prendaPayload.precioIndividual = null;
-                prendaPayload.ofertaCantidad = null;
-                prendaPayload.ofertaPrecio = null;
+                prendaPayload.precioIndividual = undefined;
+                prendaPayload.ofertaCantidad = undefined;
+                prendaPayload.ofertaPrecio = undefined;
             }
 
             if (selectedPrenda) { // --- EDIT LOGIC ---
@@ -1045,7 +1045,7 @@ export default function PacaDetailPage() {
     );
   }
 
-  const isAgregarPrendaDisabled = paca.inventarioCompleto || (paca.prendasRegistradas ?? 0) >= paca.cantidadPrendas;
+  const isAgregarPrendaDisabled = Boolean(paca && (paca.inventarioCompleto || (paca.prendasRegistradas ?? 0) >= paca.cantidadPrendas));
 
   return (
     <div className="space-y-6">
@@ -1222,8 +1222,8 @@ export default function PacaDetailPage() {
                   <TableRow>
                     <TableHead className="w-[50px] px-2">
                         <Checkbox
-                           checked={prendas && prendas.length > 0 && selectedPrendas.size === prendas.length}
-                           onCheckedChange={(checked) => handleSelectAll(!!checked)}
+                           checked={Boolean(prendas && prendas.length > 0 && selectedPrendas.size === prendas.length)}
+                           onCheckedChange={(checked) => handleSelectAll(Boolean(checked))}
                            aria-label="Seleccionar todo"
                         />
                     </TableHead>
@@ -1344,8 +1344,7 @@ export default function PacaDetailPage() {
                         handleDeletePrendaGroup(prendaForAction);
                     }
                 }}
-                variant="destructive"
-                className="font-sans text-sm"
+                className="font-sans text-sm bg-red-600 text-white hover:bg-red-700"
                 disabled={isSubmitting}
             >
               {isSubmitting ? 'Procesando...' : (alertAction === 'defective' ? 'Sí, descontar unidad' : 'Sí, eliminar grupo')}

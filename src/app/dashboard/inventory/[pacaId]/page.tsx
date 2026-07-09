@@ -62,8 +62,8 @@ import {
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Badge } from '@/components/ui/badge';
 import { ArrowLeft, PlusCircle, DollarSign, MoreHorizontal, Pencil, Trash2, FileDown, ArrowUpDown, FileText, Loader2, MinusCircle } from 'lucide-react';
-import { useFirestore, useDoc, useCollection, useMemoFirebase, useUser } from '@/firebase';
-import { collection, doc, addDoc, updateDoc, deleteDoc, serverTimestamp, runTransaction, getDocs, query, where, orderBy, collectionGroup, writeBatch } from 'firebase/firestore';
+import { useFirestore, useDoc, useMemoFirebase, useUser } from '@/firebase';
+import { collection, doc, addDoc, updateDoc, deleteDoc, serverTimestamp, runTransaction, getDocs, query, where, orderBy, collectionGroup, writeBatch, limit, startAfter, type QueryDocumentSnapshot, type DocumentData } from 'firebase/firestore';
 import { useToast } from '@/hooks/use-toast';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { format } from 'date-fns';
@@ -373,6 +373,14 @@ export default function PacaDetailPage() {
   const [isBulkEditDialogOpen, setIsBulkEditDialogOpen] = useState(false);
   const [newBulkPrice, setNewBulkPrice] = useState<number | ''>('');
 
+  // Prendas pagination state
+  const ITEMS_PER_PAGE = 50;
+  const [prendas, setPrendas] = useState<Prenda[]>([]);
+  const [isPrendasLoading, setIsPrendasLoading] = useState(true);
+  const [isLoadingMorePrendas, setIsLoadingMorePrendas] = useState(false);
+  const [lastPrendaDoc, setLastPrendaDoc] = useState<QueryDocumentSnapshot<DocumentData> | null>(null);
+  const [hasMorePrendas, setHasMorePrendas] = useState(true);
+
   // Alert Dialog State
   const [alertAction, setAlertAction] = useState<'defective' | 'deleteGroup' | null>(null);
   const [isAlertOpen, setIsAlertOpen] = useState(false);
@@ -402,18 +410,70 @@ export default function PacaDetailPage() {
   }, [firestore, pacaId, user]);
   const { data: paca, isLoading: isPacaLoading, error: pacaError } = useDoc<Paca>(pacaDocRef);
 
-  // Fetch prendas for the paca
+  // Fetch prendas for the paca in batches
   const prendasCollectionRef = useMemoFirebase(() => {
     if (!firestore || !pacaId) return null;
     return collection(firestore, 'pacas', pacaId, 'prendas');
   }, [firestore, pacaId]);
-  
-  const prendasQueryRef = useMemoFirebase(() => {
-    if (!prendasCollectionRef || !user) return null;
-    return query(prendasCollectionRef, orderBy('createdAt', 'asc'));
-  }, [prendasCollectionRef, user]);
 
-  const { data: prendas, isLoading: isPrendasLoading } = useCollection<Prenda>(prendasQueryRef, { enabled: !!user });
+  useEffect(() => {
+    if (!firestore || !pacaId || !user || !prendasCollectionRef) {
+      setPrendas([]);
+      setIsPrendasLoading(false);
+      setHasMorePrendas(false);
+      setLastPrendaDoc(null);
+      return;
+    }
+
+    let isCancelled = false;
+
+    const loadInitialPrendas = async () => {
+      setIsPrendasLoading(true);
+      setIsLoadingMorePrendas(false);
+      setLastPrendaDoc(null);
+      setHasMorePrendas(true);
+
+      const initialQuery = query(prendasCollectionRef, orderBy('createdAt', 'asc'), limit(ITEMS_PER_PAGE));
+      const snapshot = await getDocs(initialQuery);
+
+      if (!isCancelled) {
+        const initialPrendas = snapshot.docs.map((docSnapshot) => ({ id: docSnapshot.id, ...docSnapshot.data() } as Prenda));
+        setPrendas(initialPrendas);
+        setLastPrendaDoc(snapshot.docs[snapshot.docs.length - 1] ?? null);
+        setHasMorePrendas(snapshot.docs.length === ITEMS_PER_PAGE);
+        setIsPrendasLoading(false);
+      }
+    };
+
+    loadInitialPrendas();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [firestore, pacaId, user, prendasCollectionRef]);
+
+  const handleLoadMorePrendas = useCallback(async () => {
+    if (!firestore || !prendasCollectionRef || !lastPrendaDoc || isLoadingMorePrendas) return;
+
+    setIsLoadingMorePrendas(true);
+
+    try {
+      const nextQuery = query(
+        prendasCollectionRef,
+        orderBy('createdAt', 'asc'),
+        startAfter(lastPrendaDoc),
+        limit(ITEMS_PER_PAGE)
+      );
+      const snapshot = await getDocs(nextQuery);
+      const nextPrendas = snapshot.docs.map((docSnapshot) => ({ id: docSnapshot.id, ...docSnapshot.data() } as Prenda));
+
+      setPrendas((prevPrendas) => [...prevPrendas, ...nextPrendas]);
+      setLastPrendaDoc(snapshot.docs[snapshot.docs.length - 1] ?? null);
+      setHasMorePrendas(snapshot.docs.length === ITEMS_PER_PAGE);
+    } finally {
+      setIsLoadingMorePrendas(false);
+    }
+  }, [firestore, prendasCollectionRef, lastPrendaDoc, isLoadingMorePrendas]);
   
   useEffect(() => {
       const bq = Number(bulkQuantity);
@@ -485,7 +545,7 @@ export default function PacaDetailPage() {
   }, [paca]);
 
   const prendasRegistradasEnStock = useMemo(() => {
-    return prendas?.reduce((sum, prenda) => sum + prenda.cantidad, 0) || 0;
+    return prendas.reduce((sum, prenda) => sum + prenda.cantidad, 0) || 0;
   }, [prendas]);
 
   const resetForm = () => {
@@ -1204,15 +1264,20 @@ export default function PacaDetailPage() {
            <Card style={{ backgroundColor: 'hsla(39, 44%, 84%, 0.8)', backdropFilter: 'blur(8px)' }}>
             <CardHeader>
               <CardTitle className="font-sans text-2xl text-black">Prendas Registradas</CardTitle>
-              <CardDescription className="font-sans font-semibold text-md text-black flex justify-between items-center">
+              <CardDescription className="font-sans font-semibold text-md text-black flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
                 <span>Lista de prendas en esta paca.</span>
                 {paca && (
-                  <Badge variant={selectedPrendasCount > 0 ? 'destructive' : (paca.inventarioCompleto ? 'default' : 'secondary')} className="text-sm">
-                    {selectedPrendasCount > 0
-                        ? `${selectedPrendasCount} de ${paca.cantidadPrendas} seleccionadas`
-                        : `${paca.prendasRegistradas || 0} de ${paca.cantidadPrendas} registradas`
-                    }
-                  </Badge>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge variant={selectedPrendasCount > 0 ? 'destructive' : (paca.inventarioCompleto ? 'default' : 'secondary')} className="text-sm">
+                      {selectedPrendasCount > 0
+                          ? `${selectedPrendasCount} de ${paca.cantidadPrendas} seleccionadas`
+                          : `${paca.prendasRegistradas || 0} de ${paca.cantidadPrendas} registradas`
+                      }
+                    </Badge>
+                    <Badge variant="outline" className="text-xs">
+                      Mostrando {prendas.length} de {paca.prendasRegistradas || 0} prendas
+                    </Badge>
+                  </div>
                 )}
               </CardDescription>
             </CardHeader>
@@ -1262,52 +1327,75 @@ export default function PacaDetailPage() {
                       </TableCell>
                     </TableRow>
                   ) : sortedPrendas && sortedPrendas.length > 0 ? (
-                    sortedPrendas.map((prenda) => (
-                      <TableRow key={prenda.id} className="font-sans text-xs" data-state={selectedPrendas.has(prenda.id) && "selected"}>
-                        <TableCell className="px-2">
-                            <Checkbox
-                                checked={selectedPrendas.has(prenda.id)}
-                                onCheckedChange={(checked) => handleSelectPrenda(prenda.id, !!checked)}
-                                aria-label="Seleccionar fila"
-                            />
-                        </TableCell>
-                        <TableCell className="font-semibold">{prenda.idPersonalizado}</TableCell>
-                        <TableCell>{prenda.tipoPrenda}</TableCell>
-                        <TableCell className="hidden md:table-cell">
-                            <Badge variant="outline">{prenda.talla === 'Única' ? '----' : prenda.talla}</Badge>
-                        </TableCell>
-                        <TableCell className="hidden lg:table-cell">{prenda.genero}</TableCell>
-                        <TableCell className="text-right font-bold">{prenda.cantidad}</TableCell>
-                        <TableCell className="hidden md:table-cell text-right">${costoUnitario.toFixed(2)}</TableCell>
-                        <TableCell className="text-right font-bold">${prenda.precioVenta.toFixed(2)}</TableCell>
-                        <TableCell className="text-right">
-                          <DropdownMenu>
-                            <DropdownMenuTrigger asChild>
-                              <Button variant="ghost" className="h-8 w-8 p-0">
-                                <span className="sr-only">Abrir menú</span>
-                                <MoreHorizontal className="h-4 w-4" />
-                              </Button>
-                            </DropdownMenuTrigger>
-                            <DropdownMenuContent align="end" className="font-sans bg-white border-2 border-black" style={{ backgroundColor: 'hsla(39, 44%, 84%, 0.9)', backdropFilter: 'blur(8px)' }}>
-                              <DropdownMenuLabel>Acciones</DropdownMenuLabel>
-                              <DropdownMenuItem onClick={() => handleEdit(prenda)}>
-                                <Pencil className="mr-2 h-4 w-4" />
-                                Editar Grupo
-                              </DropdownMenuItem>
-                              <DropdownMenuSeparator className="bg-black/50" />
-                              <DropdownMenuItem onSelect={(e) => e.preventDefault()} onClick={() => { setPrendaForAction(prenda); setAlertAction('defective'); setIsAlertOpen(true); }}>
-                                <MinusCircle className="mr-2 h-4 w-4" />
-                                Descontar Defectuosa
-                              </DropdownMenuItem>
-                              <DropdownMenuItem onSelect={(e) => e.preventDefault()} onClick={() => { setPrendaForAction(prenda); setAlertAction('deleteGroup'); setIsAlertOpen(true); }} className="text-red-600 focus:text-red-600">
-                                <Trash2 className="mr-2 h-4 w-4" />
-                                Eliminar Grupo
-                              </DropdownMenuItem>
-                            </DropdownMenuContent>
-                          </DropdownMenu>
-                        </TableCell>
-                      </TableRow>
-                    ))
+                    <>
+                      {sortedPrendas.map((prenda) => (
+                        <TableRow key={prenda.id} className="font-sans text-xs" data-state={selectedPrendas.has(prenda.id) && "selected"}>
+                          <TableCell className="px-2">
+                              <Checkbox
+                                  checked={selectedPrendas.has(prenda.id)}
+                                  onCheckedChange={(checked) => handleSelectPrenda(prenda.id, !!checked)}
+                                  aria-label="Seleccionar fila"
+                              />
+                          </TableCell>
+                          <TableCell className="font-semibold">{prenda.idPersonalizado}</TableCell>
+                          <TableCell>{prenda.tipoPrenda}</TableCell>
+                          <TableCell className="hidden md:table-cell">
+                              <Badge variant="outline">{prenda.talla === 'Única' ? '----' : prenda.talla}</Badge>
+                          </TableCell>
+                          <TableCell className="hidden lg:table-cell">{prenda.genero}</TableCell>
+                          <TableCell className="text-right font-bold">{prenda.cantidad}</TableCell>
+                          <TableCell className="hidden md:table-cell text-right">${costoUnitario.toFixed(2)}</TableCell>
+                          <TableCell className="text-right font-bold">${prenda.precioVenta.toFixed(2)}</TableCell>
+                          <TableCell className="text-right">
+                            <DropdownMenu>
+                              <DropdownMenuTrigger asChild>
+                                <Button variant="ghost" className="h-8 w-8 p-0">
+                                  <span className="sr-only">Abrir menú</span>
+                                  <MoreHorizontal className="h-4 w-4" />
+                                </Button>
+                              </DropdownMenuTrigger>
+                              <DropdownMenuContent align="end" className="font-sans bg-white border-2 border-black" style={{ backgroundColor: 'hsla(39, 44%, 84%, 0.9)', backdropFilter: 'blur(8px)' }}>
+                                <DropdownMenuLabel>Acciones</DropdownMenuLabel>
+                                <DropdownMenuItem onClick={() => handleEdit(prenda)}>
+                                  <Pencil className="mr-2 h-4 w-4" />
+                                  Editar Grupo
+                                </DropdownMenuItem>
+                                <DropdownMenuSeparator className="bg-black/50" />
+                                <DropdownMenuItem onSelect={(e) => e.preventDefault()} onClick={() => { setPrendaForAction(prenda); setAlertAction('defective'); setIsAlertOpen(true); }}>
+                                  <MinusCircle className="mr-2 h-4 w-4" />
+                                  Descontar Defectuosa
+                                </DropdownMenuItem>
+                                <DropdownMenuItem onSelect={(e) => e.preventDefault()} onClick={() => { setPrendaForAction(prenda); setAlertAction('deleteGroup'); setIsAlertOpen(true); }} className="text-red-600 focus:text-red-600">
+                                  <Trash2 className="mr-2 h-4 w-4" />
+                                  Eliminar Grupo
+                                </DropdownMenuItem>
+                              </DropdownMenuContent>
+                            </DropdownMenu>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                      {hasMorePrendas && (
+                        <TableRow>
+                          <TableCell colSpan={9} className="py-3 text-center">
+                            <Button
+                              variant="outline"
+                              className="font-sans text-sm"
+                              onClick={handleLoadMorePrendas}
+                              disabled={isLoadingMorePrendas}
+                            >
+                              {isLoadingMorePrendas ? (
+                                <>
+                                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                  Cargando...
+                                </>
+                              ) : (
+                                `Cargar siguientes ${ITEMS_PER_PAGE} prendas`
+                              )}
+                            </Button>
+                          </TableCell>
+                        </TableRow>
+                      )}
+                    </>
                   ) : (
                     <TableRow>
                       <TableCell colSpan={9} className="h-24 text-center font-sans font-semibold text-lg text-black">

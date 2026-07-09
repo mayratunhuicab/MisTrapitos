@@ -299,8 +299,8 @@ export default function SalesPage() {
         
         const prendaFound: Prenda = {
           id: prendaDoc.id,
+          ...prendaData,
           pacaId: prendaDoc.ref.parent.parent!.id,
-          ...prendaData
         };
         
         addToCart(prendaFound);
@@ -358,21 +358,25 @@ export default function SalesPage() {
   const updateCartQuantity = (cartId: string, newQuantityStr: string) => {
     const newQuantity = newQuantityStr === '' ? '' : parseInt(newQuantityStr, 10);
 
-    setCart(currentCart => currentCart.map(item => {
-        if (item.cartId === cartId) {
-            if (newQuantity === '') {
-                return { ...item, cantidadEnCarrito: '' };
-            }
-            if (newQuantity > 0 && newQuantity <= item.cantidad) {
-                return { ...item, cantidadEnCarrito: newQuantity };
-            }
-            if (newQuantity > item.cantidad) {
-                toast({ variant: "destructive", title: "Stock insuficiente", description: `Solo hay ${item.cantidad} unidades disponibles.` });
-                return { ...item, cantidadEnCarrito: item.cantidad };
-            }
-            return { ...item, cantidadEnCarrito: 1 };
+    setCart(currentCart => currentCart.flatMap(item => {
+        if (item.cartId !== cartId) {
+            return [item];
         }
-        return item;
+
+        if (newQuantity === '') {
+            return [{ ...item, cantidadEnCarrito: '' as const }];
+        }
+
+        if (newQuantity > 0 && newQuantity <= item.cantidad) {
+            return [{ ...item, cantidadEnCarrito: newQuantity }];
+        }
+
+        if (newQuantity > item.cantidad) {
+            toast({ variant: "destructive", title: "Stock insuficiente", description: `Solo hay ${item.cantidad} unidades disponibles.` });
+            return [{ ...item, cantidadEnCarrito: item.cantidad }];
+        }
+
+        return [{ ...item, cantidadEnCarrito: 1 }];
     }).filter(item => item.cantidadEnCarrito !== 0));
   };
 
@@ -576,7 +580,7 @@ export default function SalesPage() {
                 const prendaDoc = prendaDocs[i];
                 const cantidadEnCarrito = Number(item.cantidadEnCarrito) || 0;
                 
-                const newStock = prendaDoc.data().cantidad - cantidadEnCarrito;
+                const newStock = (Number(prendaDoc.data()?.cantidad ?? 0)) - cantidadEnCarrito;
                 transaction.update(ref, { cantidad: newStock });
             }
 
@@ -928,8 +932,7 @@ export default function SalesPage() {
                                 <AlertDialogCancel>Cancelar</AlertDialogCancel>
                                 <AlertDialogAction 
                                     onClick={handleFinalizeSale} 
-                                    variant="destructive" 
-                                    className="font-sans text-sm"
+                                    className="font-sans text-sm bg-red-600 text-white hover:bg-red-700"
                                     disabled={metodoPago === 'EFECTIVO' && (Number(montoPagado) || 0) < cartSummary.total}
                                 >
                                     Sí, registrar venta

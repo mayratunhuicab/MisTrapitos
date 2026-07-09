@@ -341,8 +341,8 @@ export default function ApartadosPage() {
                 
                 const prendaFound: Prenda = {
                     id: prendaDoc.id,
-                    pacaId: prendaDoc.ref.parent.parent!.id,
                     ...prendaData,
+                    pacaId: prendaDoc.ref.parent.parent!.id,
                 };
                 
                 addToCart(prendaFound);
@@ -476,7 +476,8 @@ export default function ApartadosPage() {
                 for (let i = 0; i < prendaDocs.length; i++) {
                     const { ref, item } = prendaRefsAndData[i];
                     const prendaDoc = prendaDocs[i];
-                    const newStock = prendaDoc.data().cantidad - (Number(item.cantidadEnCarrito) || 0);
+                    const currentStock = Number(prendaDoc.data()?.cantidad ?? 0);
+                    const newStock = currentStock - (Number(item.cantidadEnCarrito) || 0);
                     transaction.update(ref, { cantidad: newStock });
 
                     const apartadoItemRef = doc(collection(apartadoRef, "items"));
@@ -601,7 +602,7 @@ export default function ApartadosPage() {
             case 'VIGENTE': return 'secondary';
             case 'LIQUIDADO': return 'default';
             case 'CANCELADO': return 'destructive';
-            default: return 'outline';
+            default: return 'default';
         }
     };
 
@@ -1148,7 +1149,7 @@ export default function ApartadosPage() {
                     </AlertDialogHeader>
                     <AlertDialogFooter>
                         <AlertDialogCancel disabled={isActionLoading}>No, volver</AlertDialogCancel>
-                        <AlertDialogAction onClick={handleCancelApartado} disabled={isActionLoading} variant="destructive">
+                        <AlertDialogAction onClick={handleCancelApartado} disabled={isActionLoading} className="bg-red-600 text-white hover:bg-red-700">
                             {isActionLoading ? "Cancelando..." : "Sí, cancelar apartado"}
                         </AlertDialogAction>
                     </AlertDialogFooter>
@@ -1164,7 +1165,7 @@ export default function ApartadosPage() {
                     </AlertDialogHeader>
                     <AlertDialogFooter>
                         <AlertDialogCancel disabled={isActionLoading}>No, volver</AlertDialogCancel>
-                        <AlertDialogAction onClick={handleDeleteApartado} disabled={isActionLoading} variant="destructive">
+                        <AlertDialogAction onClick={handleDeleteApartado} disabled={isActionLoading} className="bg-red-600 text-white hover:bg-red-700">
                             {isActionLoading ? "Eliminando..." : "Sí, eliminar"}
                         </AlertDialogAction>
                     </AlertDialogFooter>

@@ -63,7 +63,7 @@ import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Badge } from '@/components/ui/badge';
 import { ArrowLeft, PlusCircle, DollarSign, MoreHorizontal, Pencil, Trash2, FileDown, ArrowUpDown, FileText, Loader2, MinusCircle } from 'lucide-react';
 import { useFirestore, useDoc, useMemoFirebase, useUser } from '@/firebase';
-import { collection, doc, addDoc, updateDoc, deleteDoc, serverTimestamp, runTransaction, getDocs, query, where, orderBy, collectionGroup, writeBatch, limit, startAfter, type QueryDocumentSnapshot, type DocumentData } from 'firebase/firestore';
+import { collection, doc, addDoc, updateDoc, deleteDoc, deleteField, serverTimestamp, runTransaction, getDocs, query, where, orderBy, collectionGroup, writeBatch, limit, startAfter, type QueryDocumentSnapshot, type DocumentData } from 'firebase/firestore';
 import { useToast } from '@/hooks/use-toast';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { format } from 'date-fns';
@@ -646,11 +646,15 @@ export default function PacaDetailPage() {
                 prendaPayload.precioIndividual = numPrecioIndividual;
                 prendaPayload.ofertaCantidad = Number(bulkQuantity);
                 prendaPayload.ofertaPrecio = Number(bulkPrice);
-            } else {
-                prendaPayload.precioIndividual = undefined;
-                prendaPayload.ofertaCantidad = undefined;
-                prendaPayload.ofertaPrecio = undefined;
             }
+            // Firestore no acepta `undefined` como valor de un campo (por eso fallaba el
+            // guardado). Para una prenda NUEVA basta con no incluir estos campos en el
+            // payload (ya se logra arriba, al no entrar al if). Para EDITAR una prenda que
+            // tenía oferta y se le quita, hay que borrarlos de verdad con deleteField() —
+            // eso se aplica más abajo, solo en las llamadas a transaction.update().
+            const clearOfertaFields = priceMode === 'bulk'
+                ? {}
+                : { precioIndividual: deleteField(), ofertaCantidad: deleteField(), ofertaPrecio: deleteField() };
 
             if (selectedPrenda) { // --- EDIT LOGIC ---
                 const conflictDoc = allPrendasInPaca.find(p => 
@@ -664,7 +668,7 @@ export default function PacaDetailPage() {
                 }
                 const prendaRef = doc(transactionPrendasCollectionRef, selectedPrenda.id);
 
-                transaction.update(prendaRef, prendaPayload);
+                transaction.update(prendaRef, { ...prendaPayload, ...clearOfertaFields });
                 ventaTotalPotencialDelta = (ventaPrice * numCantidad) - (selectedPrenda.precioVenta * selectedPrenda.cantidad);
 
             } else { // --- ADD LOGIC ---
@@ -677,7 +681,7 @@ export default function PacaDetailPage() {
                 if (existingPrendaToMerge) { // Merge
                     const newQuantity = existingPrendaToMerge.cantidad + numCantidad;
                     const prendaRef = doc(transactionPrendasCollectionRef, existingPrendaToMerge.id);
-                    transaction.update(prendaRef, { ...prendaPayload, cantidad: newQuantity });
+                    transaction.update(prendaRef, { ...prendaPayload, ...clearOfertaFields, cantidad: newQuantity });
                     ventaTotalPotencialDelta = (ventaPrice * newQuantity) - (existingPrendaToMerge.precioVenta * existingPrendaToMerge.cantidad);
                 } else { // Add new
                     const nextId = currentPacaData.prendaNextId || 1;
@@ -1274,9 +1278,7 @@ export default function PacaDetailPage() {
                           : `${paca.prendasRegistradas || 0} de ${paca.cantidadPrendas} registradas`
                       }
                     </Badge>
-                    <Badge variant="outline" className="text-xs">
-                      Mostrando {prendas.length} de {paca.prendasRegistradas || 0} prendas
-                    </Badge>
+
                   </div>
                 )}
               </CardDescription>

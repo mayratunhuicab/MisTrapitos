@@ -3,7 +3,7 @@
 import { useState, useMemo, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import { useFirestore, useCollection, useMemoFirebase, useUser, useStorage } from '@/firebase';
-import { collection, query, orderBy, doc, getDocs, runTransaction, getDoc, where, Timestamp, limit, startAfter, type QueryDocumentSnapshot, type DocumentData } from 'firebase/firestore';
+import { collection, collectionGroup, query, orderBy, doc, getDocs, runTransaction, getDoc, where, Timestamp, limit, startAfter, type QueryDocumentSnapshot, type DocumentData } from 'firebase/firestore';
 import { ref as storageRef, deleteObject } from 'firebase/storage';
 import { Badge } from "@/components/ui/badge";
 import {
@@ -206,72 +206,21 @@ export default function SalesHistoryPage() {
   }, [firestore, user, dateRange]);
   const { data: gastos, isLoading: isLoadingGastos } = useCollection<Gasto>(gastosQuery);
 
-  // Fetch all apartados to then query their subcollections
-  const apartadosQuery = useMemoFirebase(() => {
-    if (!firestore || !user) return null;
-    return query(collection(firestore, 'apartados'));
-  }, [firestore, user]);
-  const { data: apartados, isLoading: isLoadingApartados } = useCollection<Apartado>(apartadosQuery);
-
-  const [pagos, setPagos] = useState<Pago[] | null>(null);
-  const [isLoadingPagos, setIsLoadingPagos] = useState(true);
-
-  // This effect fetches 'pagos' from the subcollection of each 'apartado'.
-  // It runs whenever the list of apartados or the selected date range changes.
-  useEffect(() => {
-    if (!firestore || !apartados || !dateRange.start || !dateRange.end) {
-      if(!isLoadingApartados) {
-        setIsLoadingPagos(false);
-        setPagos([]);
-      }
-      return;
-    }
-
-    const fetchPagos = async () => {
-      setIsLoadingPagos(true);
-      try {
-        const allPagos: Pago[] = [];
-        
-        // Create an array of promises, one for each 'apartado', to fetch its 'pagos'.
-        const promises = apartados.map(apartado => {
-          const pagosRef = collection(firestore, 'apartados', apartado.id, 'pagos');
-          const q = query(pagosRef, 
-            where('fecha', '>=', dateRange.start!),
-            where('fecha', '<=', dateRange.end!),
-            orderBy('fecha', 'desc')
-          );
-          return getDocs(q);
-        });
-
-        const querySnapshots = await Promise.all(promises);
-
-        // Process the results from all promises
-        querySnapshots.forEach(snapshot => {
-          snapshot.forEach(doc => {
-            allPagos.push({ id: doc.id, ...(doc.data() as Omit<Pago, 'id'>) });
-          });
-        });
-
-        // Sort the aggregated payments by date
-        allPagos.sort((a, b) => b.fecha.seconds - a.fecha.seconds);
-        setPagos(allPagos);
-
-      } catch (error) {
-        console.error("Error fetching pagos:", error);
-        toast({
-          variant: "destructive",
-          title: "Error al cargar pagos",
-          description: "No se pudieron cargar los pagos de los apartados.",
-        });
-        setPagos([]);
-      } finally {
-        setIsLoadingPagos(false);
-      }
-    };
-
-    fetchPagos();
-
-  }, [firestore, apartados, isLoadingApartados, dateRange, toast]);
+  // Antes: se traían TODOS los apartados de la tienda y se lanzaba una consulta getDocs
+  // por cada uno para revisar sus 'pagos' (con 300 apartados eran 300 consultas cada vez
+  // que cambiaba el rango de fechas). Ahora: una sola consulta en tiempo real sobre el
+  // grupo de colecciones 'pagos' de todos los apartados, filtrada por el rango visible.
+  // Las reglas de Firestore ya permiten esta consulta (ver firestore.rules).
+  const pagosQuery = useMemoFirebase(() => {
+    if (!firestore || !user || !dateRange.start || !dateRange.end) return null;
+    return query(
+      collectionGroup(firestore, 'pagos'),
+      where('fecha', '>=', dateRange.start),
+      where('fecha', '<=', dateRange.end),
+      orderBy('fecha', 'desc')
+    );
+  }, [firestore, user, dateRange]);
+  const { data: pagos, isLoading: isLoadingPagos } = useCollection<Pago>(pagosQuery, { enabled: !!user });
 
   const salesSummary = useMemo(() => {
     const summary = {
@@ -568,7 +517,7 @@ const handleDeleteSale = async (ventaId: string) => {
     toast({ variant: "success", title: "Reporte Generado", description: "El cierre de caja se ha descargado." });
   };
 
-  const isLoading = isLoadingVentas || isLoadingGastos || isLoadingPagos || isLoadingApartados;
+  const isLoading = isLoadingVentas || isLoadingGastos || isLoadingPagos;
 
   return (
     <div className="space-y-6">

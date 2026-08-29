@@ -19,7 +19,7 @@ import {
 } from "@/components/ui/chart"
 import { Button } from "@/components/ui/button"
 import { useFirestore, useCollection, useUser, useMemoFirebase } from "@/firebase"
-import { collection, query, where, Timestamp, orderBy, getDocs } from "firebase/firestore"
+import { collection, collectionGroup, query, where, Timestamp, orderBy } from "firebase/firestore"
 import { startOfWeek, endOfWeek, format, eachDayOfInterval, addDays, subDays } from "date-fns"
 import { es } from "date-fns/locale"
 import { DollarSign, TrendingUp, TrendingDown, ChevronLeft, ChevronRight, LocateFixed, FileDown, Landmark, Banknote } from "lucide-react"
@@ -111,65 +111,21 @@ export default function ReportsPage() {
   }, [firestore, user, weekStart, weekEnd]);
   const { data: gastos, isLoading: isLoadingGastos } = useCollection<Gasto>(gastosQuery, { enabled: !!user });
   
-  const apartadosQuery = useMemoFirebase(() => {
+  // Antes: se traían TODOS los apartados de la tienda y se lanzaba una consulta getDocs
+  // por cada uno para revisar sus 'pagos' (si había 300 apartados, eran 300 consultas
+  // cada vez que cambiabas de semana). Ahora: una sola consulta en tiempo real sobre el
+  // grupo de colecciones 'pagos' de todos los apartados, filtrada por la semana visible.
+  // Las reglas de Firestore ya permiten esta consulta (ver firestore.rules).
+  const pagosQuery = useMemoFirebase(() => {
     if (!firestore || !user) return null;
-    return query(collection(firestore, 'apartados'));
-  }, [firestore, user]);
-  const { data: apartados, isLoading: isLoadingApartados } = useCollection<Apartado>(apartadosQuery);
-
-  const [pagos, setPagos] = useState<Pago[] | null>(null);
-  const [isLoadingPagos, setIsLoadingPagos] = useState(true);
-
-  useEffect(() => {
-    if (!firestore || !apartados || !weekStart || !weekEnd) {
-      if (!isLoadingApartados) {
-        setIsLoadingPagos(false);
-        setPagos([]);
-      }
-      return;
-    }
-
-    const fetchPagos = async () => {
-      setIsLoadingPagos(true);
-      try {
-        const allPagos: Pago[] = [];
-        
-        const promises = apartados.map(apartado => {
-          const pagosRef = collection(firestore, 'apartados', apartado.id, 'pagos');
-          const q = query(pagosRef, 
-            where('fecha', '>=', weekStart),
-            where('fecha', '<=', weekEnd),
-            orderBy('fecha', 'desc')
-          );
-          return getDocs(q);
-        });
-
-        const querySnapshots = await Promise.all(promises);
-
-        querySnapshots.forEach(snapshot => {
-          snapshot.forEach(doc => {
-            allPagos.push({ id: doc.id, ...(doc.data() as Omit<Pago, 'id'>) });
-          });
-        });
-
-        allPagos.sort((a, b) => b.fecha.seconds - a.fecha.seconds);
-        setPagos(allPagos);
-
-      } catch (error) {
-        console.error("Error fetching pagos for reports:", error);
-        toast({
-          variant: "destructive",
-          title: "Error al cargar pagos",
-          description: "No se pudieron cargar los datos de pagos para el reporte.",
-        });
-        setPagos([]);
-      } finally {
-        setIsLoadingPagos(false);
-      }
-    };
-
-    fetchPagos();
-  }, [firestore, apartados, isLoadingApartados, weekStart, weekEnd, toast]);
+    return query(
+      collectionGroup(firestore, 'pagos'),
+      where('fecha', '>=', Timestamp.fromDate(weekStart)),
+      where('fecha', '<=', Timestamp.fromDate(weekEnd)),
+      orderBy('fecha', 'desc')
+    );
+  }, [firestore, user, weekStart, weekEnd]);
+  const { data: pagos, isLoading: isLoadingPagos } = useCollection<Pago>(pagosQuery, { enabled: !!user });
 
 
   // --- Process data for charts and summaries ---
@@ -334,7 +290,7 @@ export default function ReportsPage() {
   const isCurrentWeek = format(startOfWeek(currentDate, { weekStartsOn: 1 }), 'yyyy-MM-dd') === format(startOfWeek(new Date(), { weekStartsOn: 1 }), 'yyyy-MM-dd');
 
 
-  const isLoading = isLoadingVentas || isLoadingGastos || isLoadingPagos || isLoadingApartados;
+  const isLoading = isLoadingVentas || isLoadingGastos || isLoadingPagos;
 
   return (
     <div className="space-y-6">

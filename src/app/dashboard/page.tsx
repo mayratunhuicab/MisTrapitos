@@ -211,28 +211,48 @@ export default function DashboardPage() {
         }
     });
 
+    // Pre-agrupar por pacaId UNA sola vez en vez de recorrer los arrays completos
+    // dentro de pacas.map() (antes esto era O(numPacas * numItems): con cada paca,
+    // venta y apartado que se agrega a la tienda, el dashboard se volvía más lento).
+    const prendasPorPaca = new Map<string, Prenda[]>();
+    todasPrendas.forEach(prenda => {
+        if (!prendasPorPaca.has(prenda.pacaId)) prendasPorPaca.set(prenda.pacaId, []);
+        prendasPorPaca.get(prenda.pacaId)!.push(prenda);
+    });
+
+    const ventaItemsPorPaca = new Map<string, Item[]>();
+    ventaItems.forEach(item => {
+        if (!ventaItemsPorPaca.has(item.pacaId)) ventaItemsPorPaca.set(item.pacaId, []);
+        ventaItemsPorPaca.get(item.pacaId)!.push(item);
+    });
+
+    const apartadoItemsPorPaca = new Map<string, Item[]>();
+    apartadoItems.forEach(item => {
+        if (!apartadoItemsPorPaca.has(item.pacaId)) apartadoItemsPorPaca.set(item.pacaId, []);
+        apartadoItemsPorPaca.get(item.pacaId)!.push(item);
+    });
+
     return pacas.map(paca => {
-      const prendasDeLaPaca = todasPrendas.filter(prenda => prenda.pacaId === paca.id);
+      const prendasDeLaPaca = prendasPorPaca.get(paca.id) || [];
       const prendasRestantes = prendasDeLaPaca.reduce((sum, prenda) => sum + prenda.cantidad, 0);
 
       // --- Calculate Monto Recuperado ---
-      
+
       // From direct sales
-      const ventasDirectasDePaca = ventaItems.filter(item => item.pacaId === paca.id);
+      const ventasDirectasDePaca = ventaItemsPorPaca.get(paca.id) || [];
       const montoRecuperadoVentas = ventasDirectasDePaca.reduce((sum, item) => sum + (item.precioVenta * item.cantidad), 0);
-      
+
       // From layaways (apartados)
       let montoRecuperadoApartados = 0;
+      const itemsDeApartadosDeLaPaca = apartadoItemsPorPaca.get(paca.id) || [];
       const apartadosConPrendasDePaca = new Set<string>();
-      apartadoItems.forEach(item => {
-          if (item.pacaId === paca.id) {
-              const apartadoId = item._parentPath?.split('/')[1];
-              if (apartadoId) {
-                  apartadosConPrendasDePaca.add(apartadoId);
-              }
+      itemsDeApartadosDeLaPaca.forEach(item => {
+          const apartadoId = item._parentPath?.split('/')[1];
+          if (apartadoId) {
+              apartadosConPrendasDePaca.add(apartadoId);
           }
       });
-      
+
       apartadosConPrendasDePaca.forEach(apartadoId => {
           const apartado = apartadosMap.get(apartadoId);
           // If the layaway has a total value (it's not empty)

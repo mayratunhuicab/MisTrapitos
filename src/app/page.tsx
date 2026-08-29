@@ -8,11 +8,16 @@ export default function Home() {
     <div className="flex flex-col min-h-screen">
       <main className="flex-grow">
         <section className="relative h-screen w-full flex items-center justify-center text-center">
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src="/mi-fondo.png"
+          {/* Antes: <img> normal cargaba un PNG de ~916 KB sin comprimir en cada visita.
+              Ahora: next/image sirve una versión WebP ya comprimida (~40 KB) y la ajusta
+              automáticamente al tamaño de pantalla de cada visitante. */}
+          <Image
+            src="/mi-fondo.webp"
             alt="Fondo personalizado para TrapitoStock"
-            className="absolute inset-0 w-full h-full object-cover"
+            fill
+            priority
+            sizes="100vw"
+            className="object-cover"
           />
           <div className="absolute inset-0 bg-black/50"></div>
           <div className="relative z-10 flex flex-col items-center max-w-4xl mx-auto px-4 -mt-16">

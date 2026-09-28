@@ -84,6 +84,11 @@ type Prenda = {
 };
 
 
+// Minúsculas y sin acentos, para que "sueter" encuentre "Suéter".
+function normalizeText(text: string): string {
+  return (text || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+}
+
 type CartItem = Prenda & {
   cartId: string; // Unique identifier for each line item in the cart
   cantidadEnCarrito: number | '';
@@ -284,6 +289,12 @@ export default function SalesPage() {
   const { user } = useUser();
   const { toast } = useToast();
   const [searchId, setSearchId] = useState('');
+  // Búsqueda por nombre: se cargan todas las prendas una sola vez (al primer
+  // búsqueda que no coincide con un ID) y luego se filtran en el navegador,
+  // porque Firestore no permite buscar "contiene el texto".
+  const [allPrendas, setAllPrendas] = useState<(Prenda & { path: string })[] | null>(null);
+  const [nameResults, setNameResults] = useState<(Prenda & { path: string })[] | null>(null);
+  const [isSearching, setIsSearching] = useState(false);
   const [cart, setCart] = useState<CartItem[]>([]);
   const [metodoPago, setMetodoPago] = useState("EFECTIVO");
   const [isProcessing, setIsProcessing] = useState(false);
@@ -315,27 +326,57 @@ export default function SalesPage() {
     const trimmedId = searchId.trim().toUpperCase();
     if (!trimmedId) return;
 
+    setIsSearching(true);
     try {
       const prendasRef = collectionGroup(firestore, 'prendas');
       const prendasQuery = query(prendasRef, where('idPersonalizado', '==', trimmedId));
-      
+
       const querySnapshot = await getDocs(prendasQuery);
 
 
       if (!querySnapshot.empty) {
         const prendaDoc = querySnapshot.docs[0];
         const prendaData = prendaDoc.data() as Omit<Prenda, 'id'>;
-        
+
         const prendaFound: Prenda = {
           id: prendaDoc.id,
           ...prendaData,
           pacaId: prendaDoc.ref.parent.parent!.id,
         };
-        
+
         addToCart(prendaFound);
         setSearchId('');
+        setNameResults(null);
+        return;
+      }
+
+      // No hay un ID exacto: buscar por nombre (tipo de prenda, género, talla o parte del ID).
+      let prendas = allPrendas;
+      if (!prendas) {
+        const allSnapshot = await getDocs(prendasRef);
+        prendas = allSnapshot.docs.map(d => ({
+          id: d.id,
+          ...(d.data() as Omit<Prenda, 'id' | 'pacaId'>),
+          pacaId: d.ref.parent.parent!.id,
+          path: d.ref.path,
+        }));
+        setAllPrendas(prendas);
+      }
+
+      const words = normalizeText(searchId).split(/\s+/).filter(Boolean);
+      const matches = prendas
+        .filter(p => p.cantidad > 0)
+        .filter(p => {
+          const haystack = normalizeText(`${p.tipoPrenda} ${p.genero} talla ${p.talla} ${p.idPersonalizado}`);
+          return words.every(w => haystack.includes(w));
+        })
+        .slice(0, 30);
+
+      if (matches.length === 0) {
+        setNameResults(null);
+        toast({ variant: "destructive", title: "Prenda no encontrada", description: `No se encontró ninguna prenda con el ID o nombre "${searchId.trim()}".` });
       } else {
-        toast({ variant: "destructive", title: "Prenda no encontrada", description: `No se encontró ninguna prenda con el ID "${trimmedId}".` });
+        setNameResults(matches);
       }
     } catch (error: any) {
         console.error("Error searching for prenda: ", error);
@@ -348,6 +389,37 @@ export default function SalesPage() {
         } else {
             toast({ variant: "destructive", title: "Error de búsqueda", description: "No se pudo realizar la búsqueda en la base de datos." });
         }
+    } finally {
+        setIsSearching(false);
+    }
+  };
+
+  // Al elegir un resultado de la búsqueda por nombre se vuelve a leer la prenda,
+  // para agregarla al carrito con su stock actual (la lista puede estar desactualizada).
+  const handlePickResult = async (result: Prenda & { path: string }) => {
+    if (!firestore) return;
+    try {
+      const snap = await getDoc(doc(firestore, result.path));
+      if (!snap.exists()) {
+        toast({ variant: "destructive", title: "Prenda no encontrada", description: "Esta prenda ya no existe en el inventario." });
+        return;
+      }
+      const fresh: Prenda = {
+        id: snap.id,
+        ...(snap.data() as Omit<Prenda, 'id' | 'pacaId'>),
+        pacaId: snap.ref.parent.parent!.id,
+      };
+      if (fresh.cantidad <= 0) {
+        toast({ variant: "destructive", title: "Sin stock", description: `La prenda ${fresh.idPersonalizado} ya no tiene stock.` });
+        return;
+      }
+      addToCart(fresh);
+      setNameResults(null);
+      setSearchId('');
+      searchInputRef.current?.focus();
+    } catch (error) {
+      console.error("Error loading prenda: ", error);
+      toast({ variant: "destructive", title: "Error", description: "No se pudo agregar la prenda al carrito." });
     }
   };
 
@@ -623,6 +695,8 @@ export default function SalesPage() {
 
         toast({ variant: "success", title: "Venta registrada", description: "La venta se ha completado y el stock ha sido actualizado." });
         setCart([]);
+        setAllPrendas(null); // el stock cambió: la próxima búsqueda por nombre recarga la lista
+        setNameResults(null);
         setMetodoPago("EFECTIVO");
         setPaymentProof(null);
         setSaleDate(new Date());
@@ -784,7 +858,7 @@ export default function SalesPage() {
             <CardHeader>
               <CardTitle className="font-sans text-2xl text-black">Buscar Prenda</CardTitle>
                <CardDescription className="font-sans font-semibold text-md text-black">
-                Escanea o escribe el ID de la prenda para agregarla al carrito.
+                Escanea o escribe el ID o el nombre de la prenda para agregarla al carrito.
               </CardDescription>
             </CardHeader>
             <CardContent>
@@ -792,15 +866,47 @@ export default function SalesPage() {
                 <Input
                   ref={searchInputRef}
                   id="searchId"
-                  placeholder="Ej: P1-25"
+                  placeholder="Ej: P1-25 o blusa"
                   value={searchId}
                   onChange={(e) => setSearchId(e.target.value)}
                   className="bg-white/80"
                 />
-                <Button type="submit" size="icon" variant="destructive" className="text-black">
+                <Button type="submit" size="icon" variant="destructive" className="text-black" disabled={isSearching}>
                   <Search className="h-4 w-4" />
                 </Button>
               </form>
+              {nameResults && (
+                <div className="mt-3 rounded-md border bg-white/80 font-sans">
+                  <div className="flex items-center justify-between px-3 py-2 text-sm font-semibold text-black">
+                    <span>
+                      {nameResults.length === 30 ? 'Primeros 30 resultados' : `${nameResults.length} resultado(s)`} con stock. Toca uno para agregarlo:
+                    </span>
+                    <Button type="button" size="icon" variant="ghost" className="h-6 w-6" onClick={() => setNameResults(null)}>
+                      <X className="h-4 w-4" />
+                    </Button>
+                  </div>
+                  <ul className="max-h-72 overflow-y-auto divide-y">
+                    {nameResults.map(result => (
+                      <li key={result.path}>
+                        <button
+                          type="button"
+                          onClick={() => handlePickResult(result)}
+                          className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left text-sm hover:bg-black/5"
+                        >
+                          <span>
+                            <span className="font-semibold">{result.idPersonalizado}</span>{' '}
+                            {result.tipoPrenda} {result.genero} Talla {result.talla}
+                          </span>
+                          <span className="shrink-0 text-xs text-right">
+                            ${Number(result.precioVenta || 0).toFixed(2)}
+                            <span className="block text-muted-foreground">Stock: {result.cantidad}</span>
+                          </span>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
             </CardContent>
             <CardHeader className="pt-4">
               <CardTitle className="font-sans text-2xl text-black flex items-center gap-2">

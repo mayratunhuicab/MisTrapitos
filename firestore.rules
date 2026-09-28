@@ -130,5 +130,13 @@ service cloud.firestore {
       // Admins and employees can manage clients.
       allow read, write: if isAdmin() || isEmpleado();
     }
+
+    // Rules for 'gruposOferta' collection (ofertas que combinan prendas de
+    // distintas pacas). Solo los admins las configuran; los empleados no
+    // necesitan leer esta colección porque la oferta ya viaja en cada prenda
+    // (campos ofertaCantidad/ofertaPrecio/grupoOfertaId).
+    match /gruposOferta/{grupoId} {
+      allow read, write: if isAdmin();
+    }
   }
 } 

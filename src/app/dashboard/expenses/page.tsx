@@ -1,7 +1,7 @@
 
 "use client";
 
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, useCallback } from 'react';
 import {
   Card,
   CardContent,
@@ -58,7 +58,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Calendar } from "@/components/ui/calendar";
 import { Badge } from "@/components/ui/badge";
 import { useFirestore, useCollection, useUser, useMemoFirebase } from "@/firebase";
-import { collection, query, addDoc, doc, updateDoc, deleteDoc, Timestamp, orderBy, where, getDocs } from "firebase/firestore";
+import { collection, collectionGroup, query, addDoc, doc, updateDoc, deleteDoc, Timestamp, orderBy, where, getDocs, limit, startAfter, type QueryDocumentSnapshot, type DocumentData } from "firebase/firestore";
 import { format, startOfWeek, endOfWeek, addDays, subDays, startOfDay, endOfDay, isWithinInterval, isSameDay } from "date-fns";
 import { es } from "date-fns/locale";
 import { PlusCircle, Calendar as CalendarIcon, MoreHorizontal, Pencil, Trash2, ChevronLeft, ChevronRight, LocateFixed } from "lucide-react";
@@ -91,6 +91,7 @@ type Apartado = {
   id: string;
 }
 
+const GASTOS_PAGE_SIZE = 50;
 
 const formatCurrency = (value: number) => {
     return new Intl.NumberFormat('es-MX', {
@@ -141,18 +142,62 @@ export default function ExpensesPage() {
     const [fechaGasto, setFechaGasto] = useState<Date | undefined>(new Date());
     const [metodoPagoGasto, setMetodoPagoGasto] = useState<"EFECTIVO" | "TRANSFERENCIA">("EFECTIVO");
     const [isSubmitting, setIsSubmitting] = useState(false);
+    const [gastos, setGastos] = useState<Gasto[]>([]);
+    const [isLoadingGastos, setIsLoadingGastos] = useState(true);
+    const [isLoadingMoreGastos, setIsLoadingMoreGastos] = useState(false);
+    const [hasMoreGastos, setHasMoreGastos] = useState(true);
+    const [lastGastoDoc, setLastGastoDoc] = useState<QueryDocumentSnapshot<DocumentData> | null>(null);
 
-    // Fetch Gastos
-    const gastosQuery = useMemoFirebase(() => {
-        if (!firestore || !user || !dateRange.start) return null;
-        return query(
+    const fetchGastosPage = useCallback(async (append = false, cursorDoc: QueryDocumentSnapshot<DocumentData> | null = null) => {
+        if (!firestore || !user || !dateRange.start || !dateRange.end) return;
+
+        const baseQuery = query(
             collection(firestore, 'gastos'),
             where('fecha', '>=', Timestamp.fromDate(dateRange.start)),
             where('fecha', '<=', Timestamp.fromDate(dateRange.end)),
             orderBy('fecha', 'desc')
         );
-    }, [firestore, user, dateRange]);
-    const { data: gastos, isLoading: isLoadingGastos } = useCollection<Gasto>(gastosQuery, { enabled: !!user });
+        const pagedQuery = cursorDoc
+            ? query(baseQuery, startAfter(cursorDoc), limit(GASTOS_PAGE_SIZE))
+            : query(baseQuery, limit(GASTOS_PAGE_SIZE));
+
+        try {
+            if (append) {
+                setIsLoadingMoreGastos(true);
+            } else {
+                setIsLoadingGastos(true);
+            }
+
+            const snapshot = await getDocs(pagedQuery);
+            const nuevosGastos = snapshot.docs.map((docSnapshot) => ({
+                ...(docSnapshot.data() as Omit<Gasto, 'id'>),
+                id: docSnapshot.id,
+            }));
+
+            setGastos(prev => append ? [...prev, ...nuevosGastos] : nuevosGastos);
+            setLastGastoDoc(snapshot.docs[snapshot.docs.length - 1] ?? null);
+            setHasMoreGastos(snapshot.docs.length === GASTOS_PAGE_SIZE);
+        } catch (error) {
+            console.error('Error loading expenses:', error);
+            toast({ variant: 'destructive', title: 'Error', description: 'No se pudieron cargar los gastos.' });
+            setHasMoreGastos(false);
+        } finally {
+            setIsLoadingGastos(false);
+            setIsLoadingMoreGastos(false);
+        }
+    }, [firestore, user, dateRange.start, dateRange.end, toast]);
+
+    useEffect(() => {
+        if (!firestore || !user || !dateRange.start || !dateRange.end) {
+            setGastos([]);
+            setLastGastoDoc(null);
+            setHasMoreGastos(false);
+            setIsLoadingGastos(false);
+            return;
+        }
+
+        void fetchGastosPage(false, null);
+    }, [firestore, user, dateRange.start, dateRange.end, fetchGastosPage]);
     
     // Fetch Ventas to validate against
     const ventasQuery = useMemoFirebase(() => {
@@ -166,67 +211,21 @@ export default function ExpensesPage() {
     }, [firestore, user, dateRange]);
     const { data: ventas, isLoading: isLoadingVentas } = useCollection<Venta>(ventasQuery, { enabled: !!user });
 
-    // Fetch all apartados to then query their subcollections
-    const apartadosQuery = useMemoFirebase(() => {
-        if (!firestore || !user) return null;
-        return query(collection(firestore, 'apartados'));
-    }, [firestore, user]);
-    const { data: apartados, isLoading: isLoadingApartados } = useCollection<Apartado>(apartadosQuery);
-
-    const [pagos, setPagos] = useState<Pago[] | null>(null);
-    const [isLoadingPagos, setIsLoadingPagos] = useState(true);
-
-    // This effect fetches 'pagos' from the subcollection of each 'apartado'.
-    useEffect(() => {
-        if (!firestore || !apartados || !dateRange.start || !dateRange.end) {
-            if(!isLoadingApartados) {
-                setIsLoadingPagos(false);
-                setPagos([]);
-            }
-            return;
-        }
-
-        const fetchPagos = async () => {
-            setIsLoadingPagos(true);
-            try {
-                const allPagos: Pago[] = [];
-                
-                const promises = apartados.map(apartado => {
-                    const pagosRef = collection(firestore, 'apartados', apartado.id, 'pagos');
-                    const q = query(pagosRef, 
-                        where('fecha', '>=', dateRange.start!),
-                        where('fecha', '<=', dateRange.end!),
-                        orderBy('fecha', 'desc')
-                    );
-                    return getDocs(q);
-                });
-
-                const querySnapshots = await Promise.all(promises);
-
-                querySnapshots.forEach(snapshot => {
-                    snapshot.forEach(doc => {
-                        allPagos.push({ id: doc.id, ...(doc.data() as Omit<Pago, 'id'>) });
-                    });
-                });
-
-                allPagos.sort((a, b) => b.fecha.seconds - a.fecha.seconds);
-                setPagos(allPagos);
-
-            } catch (error) {
-                console.error("Error fetching pagos:", error);
-                toast({
-                    variant: "destructive",
-                    title: "Error al cargar pagos",
-                    description: "No se pudieron cargar los pagos de los apartados.",
-                });
-                setPagos([]);
-            } finally {
-                setIsLoadingPagos(false);
-            }
-        };
-
-        fetchPagos();
-    }, [firestore, apartados, isLoadingApartados, dateRange, toast]);
+    // Antes: se traían TODOS los apartados de la tienda y se lanzaba una consulta getDocs
+    // por cada uno para revisar sus 'pagos' (con 300 apartados eran 300 consultas cada vez
+    // que cambiaba el rango de fechas). Ahora: una sola consulta en tiempo real sobre el
+    // grupo de colecciones 'pagos' de todos los apartados, filtrada por el rango visible.
+    // Las reglas de Firestore ya permiten esta consulta (ver firestore.rules).
+    const pagosQuery = useMemoFirebase(() => {
+        if (!firestore || !user || !dateRange.start || !dateRange.end) return null;
+        return query(
+            collectionGroup(firestore, 'pagos'),
+            where('fecha', '>=', Timestamp.fromDate(dateRange.start)),
+            where('fecha', '<=', Timestamp.fromDate(dateRange.end)),
+            orderBy('fecha', 'desc')
+        );
+    }, [firestore, user, dateRange]);
+    const { data: pagos, isLoading: isLoadingPagos } = useCollection<Pago>(pagosQuery, { enabled: !!user });
 
 
     
@@ -465,7 +464,7 @@ export default function ExpensesPage() {
                             </div>
                             <DialogFooter>
                                 <Button variant="outline" onClick={() => setIsDialogOpen(false)} disabled={isSubmitting}>Cancelar</Button>
-                                <Button onClick={handleSaveChanges} disabled={isSubmitting || isLoadingVentas || isLoadingGastos || isLoadingPagos || isLoadingApartados} variant="destructive" className="text-black">
+                                <Button onClick={handleSaveChanges} disabled={isSubmitting || isLoadingVentas || isLoadingGastos || isLoadingPagos} variant="destructive" className="text-black">
                                     {isSubmitting ? "Guardando..." : "Guardar Gasto"}
                                 </Button>
                             </DialogFooter>
@@ -558,6 +557,13 @@ export default function ExpensesPage() {
                         </TableBody>
                     </Table>
                 </CardContent>
+                {hasMoreGastos && (
+                    <div className="mt-4 flex justify-center px-6 pb-6">
+                        <Button variant="outline" onClick={() => void fetchGastosPage(true, lastGastoDoc)} disabled={isLoadingMoreGastos}>
+                            {isLoadingMoreGastos ? 'Cargando...' : 'Cargar más gastos'}
+                        </Button>
+                    </div>
+                )}
             </Card>
         </div>
     );

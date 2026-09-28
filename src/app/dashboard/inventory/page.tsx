@@ -196,22 +196,42 @@ const { data: todasPrendas, isLoading: isPrendasLoading } = useCollection<Prenda
             apartadoItemsMap.get(apartadoId)!.push(item);
         }
     });
-    
+
+    // Pre-agrupar por pacaId UNA sola vez en vez de recorrer los arrays completos
+    // dentro de pacas.map() (antes esto era O(numPacas * numItems): con cada paca,
+    // venta y apartado que se agrega a la tienda, Inventario se volvía más lento).
+    const ventaItemsPorPaca = new Map<string, Item[]>();
+    ventaItems.forEach(item => {
+        if (!ventaItemsPorPaca.has(item.pacaId)) ventaItemsPorPaca.set(item.pacaId, []);
+        ventaItemsPorPaca.get(item.pacaId)!.push(item);
+    });
+
+    const apartadoItemsPorPaca = new Map<string, Item[]>();
+    apartadoItems.forEach(item => {
+        if (!apartadoItemsPorPaca.has(item.pacaId)) apartadoItemsPorPaca.set(item.pacaId, []);
+        apartadoItemsPorPaca.get(item.pacaId)!.push(item);
+    });
+
+    const prendasPorPaca = new Map<string, Prenda[]>();
+    todasPrendas.forEach(prenda => {
+        if (!prendasPorPaca.has(prenda.pacaId)) prendasPorPaca.set(prenda.pacaId, []);
+        prendasPorPaca.get(prenda.pacaId)!.push(prenda);
+    });
+
     return pacas.map(paca => {
-        const ventasDirectasDePaca = ventaItems.filter(item => item.pacaId === paca.id);
+        const ventasDirectasDePaca = ventaItemsPorPaca.get(paca.id) || [];
         const montoRecuperadoVentas = ventasDirectasDePaca.reduce((sum, item) => sum + (item.precioVenta * item.cantidad), 0);
-        
+
         let montoRecuperadoApartados = 0;
+        const itemsDeApartadosDeLaPaca = apartadoItemsPorPaca.get(paca.id) || [];
         const apartadosConPrendasDePaca = new Set<string>();
-        apartadoItems.forEach(item => {
-            if (item.pacaId === paca.id) {
-                const apartadoId = item._parentPath?.split('/')[1];
-                if (apartadoId) {
-                    apartadosConPrendasDePaca.add(apartadoId);
-                }
+        itemsDeApartadosDeLaPaca.forEach(item => {
+            const apartadoId = item._parentPath?.split('/')[1];
+            if (apartadoId) {
+                apartadosConPrendasDePaca.add(apartadoId);
             }
         });
-        
+
         apartadosConPrendasDePaca.forEach(apartadoId => {
             const apartado = apartadosMap.get(apartadoId);
             if (!apartado || apartado.totalApartado <= 0) return;
@@ -233,7 +253,7 @@ const { data: todasPrendas, isLoading: isPrendasLoading } = useCollection<Prenda
         const montoRecuperado = montoRecuperadoVentas + montoRecuperadoApartados;
         const costoTotal = paca.costoPaca + paca.costoEnvio;
 
-        const prendasDePaca = todasPrendas.filter(p => p.pacaId === paca.id);
+        const prendasDePaca = prendasPorPaca.get(paca.id) || [];
         const ventaPotencialStock = prendasDePaca.reduce((sum, prenda) => sum + (prenda.precioVenta * prenda.cantidad), 0);
         
         const ventaPotencialTotal = montoRecuperado + ventaPotencialStock;

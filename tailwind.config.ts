@@ -10,12 +10,16 @@ export default {
   theme: {
     extend: {
       fontFamily: {
-        sans: ['"Outfit"', 'sans-serif'],
-        body: ['"Indie Flower"', 'cursive'],
+        // Apuntan a las variables CSS que genera next/font/google en layout.tsx
+        // (antes apuntaban al nombre de la fuente y dependían del <link> a Google Fonts).
+        sans: ['var(--font-outfit)', 'sans-serif'],
+        body: ['var(--font-indie-flower)', 'cursive'],
         headline: ['Poppins', 'sans-serif'],
-        title: ['"Holtwood One SC"', 'cursive'],
-        handwritten: ['"Indie Flower"', 'cursive'],
-        welcome: ['"Playpen Sans"', 'cursive'],
+        title: ['var(--font-holtwood-one-sc)', 'cursive'],
+        handwritten: ['var(--font-indie-flower)', 'cursive'],
+        // No se usa en ninguna pantalla (la clase font-welcome no aparece en el código),
+        // así que no vale la pena auto-hospedarla; se deja el nombre como venía.
+        welcome: ['"Playpen Sans Deva"', 'cursive'],
         code: ['monospace'],
       },
       colors: {

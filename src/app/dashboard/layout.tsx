@@ -1,4 +1,5 @@
 
+import Image from 'next/image';
 import { SidebarProvider, Sidebar, SidebarContent, SidebarFooter, SidebarInset, SidebarTrigger, SidebarHeader } from '@/components/ui/sidebar';
 import { DashboardNav } from '@/components/dashboard-nav';
 import { UserNav } from '@/components/user-nav';
@@ -25,11 +26,15 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         </Sidebar>
 
         <div className="relative flex-1 flex flex-col overflow-hidden">
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src="/mi-fondo.png"
+          {/* Antes: <img> normal cargaba un PNG de ~916 KB sin comprimir en cada pantalla
+              del panel. Ahora: next/image sirve una versión WebP ya comprimida (~40 KB). */}
+          <Image
+            src="/mi-fondo.webp"
             alt="Fondo personalizado para TrapitoStock"
-            className="absolute inset-0 w-full h-full object-cover"
+            fill
+            priority
+            sizes="100vw"
+            className="object-cover"
           />
           <div className="absolute inset-0 bg-black/50"></div>
 

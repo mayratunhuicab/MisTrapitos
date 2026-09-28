@@ -2,6 +2,35 @@ import type {Metadata} from 'next';
 import './globals.css';
 import { Toaster } from "@/components/ui/toaster";
 import { FirebaseClientProvider } from '@/firebase';
+import { Outfit, Indie_Flower, Holtwood_One_SC } from 'next/font/google';
+
+// Antes: un <link> a Google Fonts cargaba 7 familias completas (varias con casi todos
+// los pesos de 100 a 900), incluyendo 4 que no se usan en ninguna parte visible del
+// código (Bricolage Grotesque, Gluten, Plus Jakarta Sans y "Playpen Sans Deva" —
+// la clase font-welcome que la usaba no aparece en ninguna pantalla). Eso era una
+// petición de red extra y bloqueante en cada carga de página, para fuentes que ni
+// siquiera se ven. Ahora: next/font/google auto-hospeda solo las 3 familias que sí
+// se usan, con solo los pesos necesarios, sin ida y vuelta a Google en cada visita.
+const outfit = Outfit({
+  subsets: ['latin'],
+  weight: ['400', '500', '600', '700', '800'],
+  variable: '--font-outfit',
+  display: 'swap',
+});
+
+const indieFlower = Indie_Flower({
+  subsets: ['latin'],
+  weight: '400',
+  variable: '--font-indie-flower',
+  display: 'swap',
+});
+
+const holtwoodOneSC = Holtwood_One_SC({
+  subsets: ['latin'],
+  weight: '400',
+  variable: '--font-holtwood-one-sc',
+  display: 'swap',
+});
 
 export const metadata: Metadata = {
   title: 'Mis Trapitos',
@@ -14,12 +43,11 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="es" suppressHydrationWarning>
-      <head>
-        <link rel="preconnect" href="https://fonts.googleapis.com" />
-        <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
-        <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,200..800&family=Gluten:wght@100..900&family=Holtwood+One+SC&family=Indie+Flower&family=Outfit:wght@100..900&family=Playpen+Sans+Deva:wght@100..800&family=Plus+Jakarta+Sans:ital,wght@0,200..800;1,200..800&display=swap" rel="stylesheet" />
-      </head>
+    <html
+      lang="es"
+      suppressHydrationWarning
+      className={`${outfit.variable} ${indieFlower.variable} ${holtwoodOneSC.variable}`}
+    >
       <body className="font-body antialiased">
         <FirebaseClientProvider>
           {children}

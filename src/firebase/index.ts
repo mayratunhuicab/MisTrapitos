@@ -22,9 +22,12 @@ export function initializeFirebase() {
 export function getSdks(firebaseApp: FirebaseApp) {
   let firestore;
   try {
-    // Attempt to initialize firestore with settings for better connectivity in restricted environments
+    // Usamos el transporte automático de Firestore (WebChannel/streaming) en vez de forzar
+    // long-polling: es más rápido en redes normales. Si en el futuro detectas problemas de
+    // conectividad en una red muy restringida (proxy corporativo, VPN), se puede activar
+    // `experimentalAutoDetectLongPolling: true` para que Firestore decida por sí mismo.
     firestore = initializeFirestore(firebaseApp, {
-      experimentalForceLongPolling: true,
+      experimentalAutoDetectLongPolling: true,
     });
   } catch (e) {
     // If already initialized (e.g. during HMR), get the existing instance

@@ -83,11 +83,111 @@ type Prenda = {
   genero: string;
   precioVenta: number;
   cantidad: number; // Stock available
+  precioIndividual?: number;
+  ofertaCantidad?: number;
+  ofertaPrecio?: number;
+  // Si la prenda pertenece a un Grupo de Oferta (configurado en /dashboard/ofertas),
+  // su oferta puede combinarse con la de OTRAS pacas que compartan el mismo grupo.
+  grupoOfertaId?: string;
 };
 
 type CartItem = Prenda & {
   cantidadEnCarrito: number | '';
 };
+
+// Por defecto, una oferta ("N por $X") solo se combina entre prendas de la MISMA
+// paca (para que "2 shorts por $100" de la paca A no se mezcle por accidente con
+// "2 pantalones por $100" de la paca B solo porque coinciden los números). Si el
+// admin configuró explícitamente un Grupo de Oferta (colección `gruposOferta`,
+// gestionada en /dashboard/ofertas) para permitir mezclar prendas específicas de
+// distintas pacas, se usa ese grupo como llave en su lugar.
+function getOfferGroupKey(item: Pick<Prenda, 'pacaId' | 'ofertaCantidad' | 'ofertaPrecio' | 'grupoOfertaId'>): string {
+  if (item.grupoOfertaId) {
+    return `grupo:${item.grupoOfertaId}`;
+  }
+  return `paca:${item.pacaId}:${item.ofertaCantidad}-${item.ofertaPrecio}`;
+}
+
+// --- Lógica de precios con oferta (misma idea que en Ventas) ---
+// Agrupa las unidades del carrito que comparten una oferta ("N por $X"),
+// arma los paquetes completos posibles y les asigna el precio de oferta
+// por unidad; las unidades sobrantes (o sin oferta configurada) usan su
+// precio individual normal.
+type PricedUnit = {
+  key: string; // `${pacaId}-${id}`
+  item: CartItem;
+  effectivePrice: number;
+};
+
+type CartPricing = {
+  pricedUnits: PricedUnit[];
+  rawSubtotal: number;
+  total: number;
+  discount: number;
+  subtotalPorItem: Map<string, number>;
+};
+
+function computeCartPricing(cart: CartItem[]): CartPricing {
+  type UnitRef = { item: CartItem; key: string };
+  const offerGroups = new Map<string, UnitRef[]>();
+  const plainUnits: UnitRef[] = [];
+
+  cart.forEach(item => {
+    const cantidad = Number(item.cantidadEnCarrito) || 0;
+    if (cantidad <= 0) return;
+    const key = `${item.pacaId}-${item.id}`;
+    const hasOferta = !!(item.ofertaCantidad && item.ofertaPrecio);
+    for (let i = 0; i < cantidad; i++) {
+      if (hasOferta) {
+        const groupKey = getOfferGroupKey(item);
+        if (!offerGroups.has(groupKey)) offerGroups.set(groupKey, []);
+        offerGroups.get(groupKey)!.push({ item, key });
+      } else {
+        plainUnits.push({ item, key });
+      }
+    }
+  });
+
+  const pricedUnits: PricedUnit[] = [];
+
+  offerGroups.forEach((units) => {
+    const ofertaCantidad = units[0].item.ofertaCantidad!;
+    const ofertaPrecio = units[0].item.ofertaPrecio!;
+    const sorted = [...units].sort((a, b) => {
+      const priceA = a.item.precioIndividual ?? a.item.precioVenta;
+      const priceB = b.item.precioIndividual ?? b.item.precioVenta;
+      return priceB - priceA;
+    });
+    const numBundles = Math.floor(sorted.length / ofertaCantidad);
+    const bundledCount = numBundles * ofertaCantidad;
+    const bundleUnitPrice = ofertaPrecio / ofertaCantidad;
+    sorted.forEach((unit, idx) => {
+      const effectivePrice = idx < bundledCount
+        ? bundleUnitPrice
+        : (unit.item.precioIndividual ?? unit.item.precioVenta);
+      pricedUnits.push({ key: unit.key, item: unit.item, effectivePrice });
+    });
+  });
+
+  plainUnits.forEach(unit => {
+    pricedUnits.push({
+      key: unit.key,
+      item: unit.item,
+      effectivePrice: unit.item.precioIndividual ?? unit.item.precioVenta,
+    });
+  });
+
+  const rawSubtotal = pricedUnits.reduce((sum, u) => sum + (u.item.precioIndividual ?? u.item.precioVenta), 0);
+  const total = pricedUnits.reduce((sum, u) => sum + u.effectivePrice, 0);
+  const discount = rawSubtotal - total;
+
+  const subtotalPorItem = new Map<string, number>();
+  pricedUnits.forEach(u => {
+    subtotalPorItem.set(u.key, (subtotalPorItem.get(u.key) || 0) + u.effectivePrice);
+  });
+
+  return { pricedUnits, rawSubtotal, total, discount, subtotalPorItem };
+}
 
 type Apartado = {
     id: string;
@@ -352,7 +452,8 @@ export default function ApartadosPage() {
         return apartados.filter(a => showArchived ? a.archivado === true : !a.archivado);
     }, [apartados, showArchived]);
 
-    const totalApartado = cart.reduce((total, item) => total + (item.precioVenta * (Number(item.cantidadEnCarrito) || 0)), 0);
+    const cartPricing = useMemo(() => computeCartPricing(cart), [cart]);
+    const totalApartado = cartPricing.total;
     const saldoPendienteCreacion = totalApartado - (Number(primerPagoAmount) || 0);
 
     // --- Functions ---
@@ -526,24 +627,47 @@ export default function ApartadosPage() {
                     comprobanteUrl: comprobanteUrl
                 });
 
-                // 3. Update stock and create item subcollection
+                // 3. Update stock (por prenda, cantidad total del carrito)
                 for (let i = 0; i < prendaDocs.length; i++) {
                     const { ref, item } = prendaRefsAndData[i];
                     const prendaDoc = prendaDocs[i];
                     const currentStock = Number(prendaDoc.data()?.cantidad ?? 0);
                     const newStock = currentStock - (Number(item.cantidadEnCarrito) || 0);
                     transaction.update(ref, { cantidad: newStock });
-
-                    const apartadoItemRef = doc(collection(apartadoRef, "items"));
-                    transaction.set(apartadoItemRef, {
-                        prendaId: item.id,
-                        pacaId: item.pacaId,
-                        idPersonalizado: item.idPersonalizado,
-                        cantidad: Number(item.cantidadEnCarrito) || 0,
-                        precioVenta: item.precioVenta,
-                        tipoPrenda: item.tipoPrenda,
-                    });
                 }
+
+                // 4. Crear la subcolección de items respetando el precio de oferta:
+                // las unidades que forman un paquete completo ("N por $X") se guardan
+                // con el precio de oferta por unidad, y las restantes con su precio normal.
+                const finalItemsMap = new Map<string, {
+                    prendaId: string;
+                    pacaId: string;
+                    idPersonalizado: string;
+                    tipoPrenda: string;
+                    cantidad: number;
+                    precioVenta: number;
+                }>();
+                cartPricing.pricedUnits.forEach(unit => {
+                    const mapKey = `${unit.item.pacaId}-${unit.item.id}-${unit.effectivePrice}`;
+                    const existing = finalItemsMap.get(mapKey);
+                    if (existing) {
+                        existing.cantidad += 1;
+                    } else {
+                        finalItemsMap.set(mapKey, {
+                            prendaId: unit.item.id,
+                            pacaId: unit.item.pacaId,
+                            idPersonalizado: unit.item.idPersonalizado,
+                            tipoPrenda: unit.item.tipoPrenda,
+                            cantidad: 1,
+                            precioVenta: unit.effectivePrice,
+                        });
+                    }
+                });
+
+                finalItemsMap.forEach(finalItem => {
+                    const apartadoItemRef = doc(collection(apartadoRef, "items"));
+                    transaction.set(apartadoItemRef, finalItem);
+                });
             });
 
             toast({ variant: "success", title: "Apartado Creado", description: "El stock ha sido actualizado." });
@@ -859,7 +983,7 @@ export default function ApartadosPage() {
                                                             <TableRow key={`${item.pacaId}-${item.id}`}>
                                                                 <TableCell className="text-xs">{item.idPersonalizado}<br/>{item.tipoPrenda}</TableCell>
                                                                 <TableCell><Input type="number" value={item.cantidadEnCarrito} onChange={(e) => updateCartQuantity(item.id, item.pacaId, e.target.value)} className="w-14 h-8 text-center" min="1" max={item.cantidad}/></TableCell>
-                                                                <TableCell className="font-bold text-right">${(item.precioVenta * (Number(item.cantidadEnCarrito) || 0)).toFixed(2)}</TableCell>
+                                                                <TableCell className="font-bold text-right">${(cartPricing.subtotalPorItem.get(`${item.pacaId}-${item.id}`) ?? 0).toFixed(2)}</TableCell>
                                                                 <TableCell><Button variant="ghost" size="icon" onClick={() => removeFromCart(item.id, item.pacaId)}><Trash2 className="h-4 w-4 text-red-600" /></Button></TableCell>
                                                             </TableRow>
                                                         )) : <TableRow><TableCell colSpan={4} className="h-24 text-center">La canasta está vacía</TableCell></TableRow>}
@@ -944,6 +1068,9 @@ export default function ApartadosPage() {
                         </ScrollArea>
                         <DialogFooter className="border-t pt-4 flex-col sm:flex-row sm:justify-between items-center">
                              <div className="text-right">
+                                {cartPricing.discount > 0.009 && (
+                                    <p className="text-sm text-green-700">Descuento por oferta: <span className="font-bold">-${cartPricing.discount.toFixed(2)}</span></p>
+                                )}
                                 <p className="text-sm">Total del Apartado: <span className="font-bold text-lg">${totalApartado.toFixed(2)}</span></p>
                                 <p className="text-sm">Saldo Pendiente: <span className="font-bold text-lg">${saldoPendienteCreacion.toFixed(2)}</span></p>
                             </div>

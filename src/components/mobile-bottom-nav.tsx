@@ -3,7 +3,7 @@
 
 import Link from "next/link"
 import { usePathname } from "next/navigation"
-import { BarChart3, LayoutDashboard, ShoppingCart, Shirt, TrendingDown, Users, Contact, PackageCheck } from "lucide-react"
+import { BarChart3, LayoutDashboard, ShoppingCart, Shirt, TrendingDown, Users, Contact, PackageCheck, Tags } from "lucide-react"
 import { useUser } from "@/firebase"
 import { useMemo } from "react"
 import { cn } from "@/lib/utils"
@@ -12,6 +12,7 @@ import { UserNav } from "./user-nav"
 const allNavItems = [
   { href: "/dashboard", icon: LayoutDashboard, label: "Panel", roles: ["admin"] },
   { href: "/dashboard/inventory", icon: Shirt, label: "Inventario", roles: ["admin"] },
+  { href: "/dashboard/ofertas", icon: Tags, label: "Ofertas", roles: ["admin"] },
   { href: "/dashboard/sales", icon: ShoppingCart, label: "Ventas", roles: ["admin", "empleado"] },
   { href: "/dashboard/apartados", icon: PackageCheck, label: "Apartados", roles: ["admin", "empleado"] },
   { href: "/dashboard/expenses", icon: TrendingDown, label: "Gastos", roles: ["admin", "empleado"] },

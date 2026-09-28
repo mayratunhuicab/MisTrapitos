@@ -105,6 +105,10 @@ type Prenda = {
   precioIndividual?: number;
   ofertaCantidad?: number;
   ofertaPrecio?: number;
+  // Si no es undefined, esta prenda forma parte de un Grupo de Oferta
+  // (configurado en /dashboard/ofertas) que permite combinar su oferta con
+  // prendas de OTRAS pacas. Se gestiona únicamente desde esa pantalla.
+  grupoOfertaId?: string;
 };
 
 
@@ -416,8 +420,15 @@ export default function PacaDetailPage() {
     return collection(firestore, 'pacas', pacaId, 'prendas');
   }, [firestore, pacaId]);
 
-  useEffect(() => {
-    if (!firestore || !pacaId || !user || !prendasCollectionRef) {
+  // Antes esta función vivía solo dentro del useEffect de montaje, así que se ejecutaba
+  // UNA sola vez al abrir la pantalla. Como la lista de prendas se trae con getDocs (no
+  // con un listener en tiempo real, a propósito, para no descargar la subcolección
+  // completa de golpe), ninguna de las acciones de abajo (agregar, editar, eliminar,
+  // ajustar por defecto, actualizar precios en lote) refrescaba la lista después de
+  // guardar — por eso había que recargar la página a fuerza para ver el cambio. Ahora es
+  // una función reutilizable que se vuelve a llamar justo después de cada operación exitosa.
+  const loadInitialPrendas = useCallback(async () => {
+    if (!firestore || !pacaId || !prendasCollectionRef) {
       setPrendas([]);
       setIsPrendasLoading(false);
       setHasMorePrendas(false);
@@ -425,32 +436,25 @@ export default function PacaDetailPage() {
       return;
     }
 
-    let isCancelled = false;
+    setIsPrendasLoading(true);
+    setIsLoadingMorePrendas(false);
+    setLastPrendaDoc(null);
+    setHasMorePrendas(true);
 
-    const loadInitialPrendas = async () => {
-      setIsPrendasLoading(true);
-      setIsLoadingMorePrendas(false);
-      setLastPrendaDoc(null);
-      setHasMorePrendas(true);
+    const initialQuery = query(prendasCollectionRef, orderBy('createdAt', 'asc'), limit(ITEMS_PER_PAGE));
+    const snapshot = await getDocs(initialQuery);
 
-      const initialQuery = query(prendasCollectionRef, orderBy('createdAt', 'asc'), limit(ITEMS_PER_PAGE));
-      const snapshot = await getDocs(initialQuery);
+    const initialPrendas = snapshot.docs.map((docSnapshot) => ({ id: docSnapshot.id, ...docSnapshot.data() } as Prenda));
+    setPrendas(initialPrendas);
+    setLastPrendaDoc(snapshot.docs[snapshot.docs.length - 1] ?? null);
+    setHasMorePrendas(snapshot.docs.length === ITEMS_PER_PAGE);
+    setIsPrendasLoading(false);
+  }, [firestore, pacaId, prendasCollectionRef]);
 
-      if (!isCancelled) {
-        const initialPrendas = snapshot.docs.map((docSnapshot) => ({ id: docSnapshot.id, ...docSnapshot.data() } as Prenda));
-        setPrendas(initialPrendas);
-        setLastPrendaDoc(snapshot.docs[snapshot.docs.length - 1] ?? null);
-        setHasMorePrendas(snapshot.docs.length === ITEMS_PER_PAGE);
-        setIsPrendasLoading(false);
-      }
-    };
-
+  useEffect(() => {
+    if (!user) return;
     loadInitialPrendas();
-
-    return () => {
-      isCancelled = true;
-    };
-  }, [firestore, pacaId, user, prendasCollectionRef]);
+  }, [user, loadInitialPrendas]);
 
   const handleLoadMorePrendas = useCallback(async () => {
     if (!firestore || !prendasCollectionRef || !lastPrendaDoc || isLoadingMorePrendas) return;
@@ -652,9 +656,13 @@ export default function PacaDetailPage() {
             // payload (ya se logra arriba, al no entrar al if). Para EDITAR una prenda que
             // tenía oferta y se le quita, hay que borrarlos de verdad con deleteField() —
             // eso se aplica más abajo, solo en las llamadas a transaction.update().
+            // Editar la oferta manualmente desde este diálogo siempre desvincula a la
+            // prenda de cualquier Grupo de Oferta compartido con otras pacas (ese
+            // vínculo se gestiona solo desde /dashboard/ofertas), para que no quede
+            // un grupo apuntando a números que ya no coinciden con los de la prenda.
             const clearOfertaFields = priceMode === 'bulk'
-                ? {}
-                : { precioIndividual: deleteField(), ofertaCantidad: deleteField(), ofertaPrecio: deleteField() };
+                ? { grupoOfertaId: deleteField() }
+                : { precioIndividual: deleteField(), ofertaCantidad: deleteField(), ofertaPrecio: deleteField(), grupoOfertaId: deleteField() };
 
             if (selectedPrenda) { // --- EDIT LOGIC ---
                 const conflictDoc = allPrendasInPaca.find(p => 
@@ -714,6 +722,7 @@ export default function PacaDetailPage() {
         setIsAddDialogOpen(false);
         setIsEditDialogOpen(false);
         resetForm();
+        await loadInitialPrendas();
 
     } catch (error) {
         console.error("Error saving document: ", error);
@@ -773,11 +782,12 @@ export default function PacaDetailPage() {
              });
         });
 
-        toast({ 
-            variant: "success", 
-            title: "Unidad Defectuosa Descontada", 
-            description: "Se ha reducido el stock en una unidad y el total de la paca se ha ajustado." 
+        toast({
+            variant: "success",
+            title: "Unidad Defectuosa Descontada",
+            description: "Se ha reducido el stock en una unidad y el total de la paca se ha ajustado."
         });
+        await loadInitialPrendas();
     } catch (error) {
         console.error("Error adjusting defective unit: ", error);
         toast({ 
@@ -824,11 +834,12 @@ export default function PacaDetailPage() {
             });
         });
 
-        toast({ 
-            variant: "success", 
-            title: "Grupo de Prendas Eliminado", 
+        toast({
+            variant: "success",
+            title: "Grupo de Prendas Eliminado",
             description: "Se ha eliminado el grupo. El inventario se ha reabierto para correcciones."
         });
+        await loadInitialPrendas();
     } catch (error) {
         console.error("Error deleting prenda group: ", error);
         const errorMessage = error instanceof Error ? error.message : "No se pudo eliminar el grupo de prendas.";
@@ -1064,6 +1075,7 @@ export default function PacaDetailPage() {
             setIsBulkEditDialogOpen(false);
             setSelectedPrendas(new Set());
             setNewBulkPrice('');
+            await loadInitialPrendas();
 
         } catch (error) {
             console.error('Error updating prices in bulk:', error);
@@ -1347,7 +1359,16 @@ export default function PacaDetailPage() {
                           <TableCell className="hidden lg:table-cell">{prenda.genero}</TableCell>
                           <TableCell className="text-right font-bold">{prenda.cantidad}</TableCell>
                           <TableCell className="hidden md:table-cell text-right">${costoUnitario.toFixed(2)}</TableCell>
-                          <TableCell className="text-right font-bold">${prenda.precioVenta.toFixed(2)}</TableCell>
+                          <TableCell className="text-right font-bold">
+                              ${prenda.precioVenta.toFixed(2)}
+                              {prenda.ofertaCantidad && prenda.ofertaPrecio && (
+                                  <div className="mt-1">
+                                      <Badge variant="secondary" className="text-[10px] font-normal whitespace-nowrap">
+                                          {prenda.grupoOfertaId ? 'Grupo: ' : ''}{prenda.ofertaCantidad}x${prenda.ofertaPrecio}
+                                      </Badge>
+                                  </div>
+                              )}
+                          </TableCell>
                           <TableCell className="text-right">
                             <DropdownMenu>
                               <DropdownMenuTrigger asChild>

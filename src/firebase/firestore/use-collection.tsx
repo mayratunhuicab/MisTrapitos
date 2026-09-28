@@ -95,6 +95,12 @@ export function useCollection<T = any>(
         setIsLoading(false);
       },
       (error: FirestoreError) => {
+        // Diagnóstico: este bloque siempre construye un FirestorePermissionError
+        // ("permisos insuficientes") sin importar cuál sea el error real que mandó
+        // Firestore (podría ser, por ejemplo, un índice faltante). Se imprime el
+        // error original tal cual para poder ver la causa verdadera en la consola.
+        console.error('[useCollection] Firestore error original:', error.code, error.message, error);
+
         // This logic extracts the path from either a ref or a query
         const path: string =
           memoizedTargetRefOrQuery.type === 'collection'

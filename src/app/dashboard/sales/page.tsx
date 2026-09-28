@@ -78,6 +78,9 @@ type Prenda = {
   precioIndividual?: number;
   ofertaCantidad?: number;
   ofertaPrecio?: number;
+  // Si la prenda pertenece a un Grupo de Oferta (configurado en /dashboard/ofertas),
+  // su oferta puede combinarse con la de OTRAS pacas que compartan el mismo grupo.
+  grupoOfertaId?: string;
 };
 
 
@@ -86,6 +89,32 @@ type CartItem = Prenda & {
   cantidadEnCarrito: number | '';
   precioAnulado?: number;
 };
+
+// Por defecto, una oferta ("N por $X") solo se combina entre prendas de la MISMA
+// paca (para que "2 shorts por $100" de la paca A no se mezcle por accidente con
+// "2 pantalones por $100" de la paca B solo porque coinciden los números). Si el
+// admin configuró explícitamente un Grupo de Oferta (colección `gruposOferta`,
+// gestionada en /dashboard/ofertas) para permitir mezclar prendas específicas de
+// distintas pacas, se usa ese grupo como llave en su lugar.
+function getOfferGroupKey(item: Pick<Prenda, 'pacaId' | 'ofertaCantidad' | 'ofertaPrecio' | 'grupoOfertaId'>): string {
+  if (item.grupoOfertaId) {
+    return `grupo:${item.grupoOfertaId}`;
+  }
+  return `paca:${item.pacaId}:${item.ofertaCantidad}-${item.ofertaPrecio}`;
+}
+
+// `crypto.randomUUID()` solo existe en un "contexto seguro" (https, o http://localhost).
+// Si la app se abre desde otro dispositivo por la IP de la red local (http:// sin ser
+// localhost), el navegador no expone esa función y truena. El cartId es solo un
+// identificador interno del carrito en memoria (no se guarda en Firestore), así que no
+// necesita ser criptográficamente aleatorio: si crypto.randomUUID no está disponible,
+// se genera un identificador igual de único con un método sin esa restricción.
+function generateCartId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return `cart-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
 
 
 const CameraDialog = ({ onCapture, setPaymentProof }: { onCapture: (dataUrl: string) => void, setPaymentProof: (proof: string | null) => void }) => {
@@ -350,7 +379,7 @@ export default function SalesPage() {
         );
       } else {
         // Add as a new line item
-        return [...currentCart, { ...prenda, cartId: self.crypto.randomUUID(), cantidadEnCarrito: 1 }];
+        return [...currentCart, { ...prenda, cartId: generateCartId(), cantidadEnCarrito: 1 }];
       }
     });
   };
@@ -393,7 +422,7 @@ export default function SalesPage() {
         // Group all individual item units that are eligible for offers
         cart.forEach(item => {
             if (item.ofertaCantidad && item.ofertaPrecio && item.precioAnulado === undefined) {
-                const offerKey = `${item.ofertaCantidad}-${item.ofertaPrecio}`;
+                const offerKey = getOfferGroupKey(item);
                 if (!offerGroups.has(offerKey)) {
                     offerGroups.set(offerKey, []);
                 }
@@ -407,8 +436,9 @@ export default function SalesPage() {
         let totalDiscount = 0;
 
         // Calculate discount for each offer group
-        for (const [offerKey, items] of offerGroups.entries()) {
-            const [ofertaCantidad, ofertaPrecio] = offerKey.split('-').map(Number);
+        for (const [, items] of offerGroups.entries()) {
+            const ofertaCantidad = items[0].ofertaCantidad!;
+            const ofertaPrecio = items[0].ofertaPrecio!;
             const numBundles = Math.floor(items.length / ofertaCantidad);
 
             if (numBundles > 0) {
@@ -487,13 +517,14 @@ export default function SalesPage() {
 
         const offerGroups = new Map<string, CartItem[]>();
         offerEligibleUnits.forEach(unit => {
-            const offerKey = `${unit.ofertaCantidad}-${unit.ofertaPrecio}`;
+            const offerKey = getOfferGroupKey(unit);
             if (!offerGroups.has(offerKey)) offerGroups.set(offerKey, []);
             offerGroups.get(offerKey)!.push(unit);
         });
 
-        for (const [offerKey, items] of offerGroups.entries()) {
-            const [ofertaCantidad, ofertaPrecio] = offerKey.split('-').map(Number);
+        for (const [, items] of offerGroups.entries()) {
+            const ofertaCantidad = items[0].ofertaCantidad!;
+            const ofertaPrecio = items[0].ofertaPrecio!;
             const numBundles = Math.floor(items.length / ofertaCantidad);
             
             items.sort((a, b) => (b.precioIndividual ?? b.precioVenta) - (a.precioIndividual ?? a.precioVenta));
@@ -691,7 +722,7 @@ export default function SalesPage() {
 
       const discountedItem: CartItem = {
           ...originalItem,
-          cartId: self.crypto.randomUUID(),
+          cartId: generateCartId(),
           cantidadEnCarrito: qtyToOverride,
           precioAnulado: Number(newPrice)
       };

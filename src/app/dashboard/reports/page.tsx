@@ -16,6 +16,7 @@ import {
 import {
   ChartContainer,
   ChartTooltipContent,
+  ChartLegendContent,
 } from "@/components/ui/chart"
 import { Button } from "@/components/ui/button"
 import { useFirestore, useCollection, useUser, useMemoFirebase } from "@/firebase"
@@ -57,16 +58,39 @@ type Apartado = {
 };
 
 
+// Colores elegidos para distinguirse entre sí (también con daltonismo) sobre el fondo beige.
 const chartConfig = {
-  ventas: {
-    label: "Ingresos Totales",
-    color: "hsl(var(--chart-2))",
+  ventasEfectivo: {
+    label: "Ventas en efectivo",
+    color: "#008300",
   },
-  gastos: {
-    label: "Gastos Totales",
-    color: "hsl(var(--chart-3))",
+  ventasTransferencia: {
+    label: "Ventas por transferencia",
+    color: "#2a78d6",
+  },
+  gastosEfectivo: {
+    label: "Gastos en efectivo",
+    color: "#c8501f",
+  },
+  gastosTransferencia: {
+    label: "Gastos por transferencia",
+    color: "#4a3aa7",
   },
 } satisfies Record<string, any>
+
+type DailyTotals = {
+  ventasEfectivo: number;
+  ventasTransferencia: number;
+  gastosEfectivo: number;
+  gastosTransferencia: number;
+};
+
+const emptyDailyTotals = (): DailyTotals => ({
+  ventasEfectivo: 0,
+  ventasTransferencia: 0,
+  gastosEfectivo: 0,
+  gastosTransferencia: 0,
+});
 
 const formatCurrency = (value: number) => {
     return new Intl.NumberFormat('es-MX', {
@@ -142,21 +166,23 @@ export default function ReportsPage() {
     };
     const weekDays = eachDayOfInterval({ start: weekStart, end: weekEnd });
 
-    const dailyData = new Map<string, { ventas: number; gastos: number }>();
+    const dailyData = new Map<string, DailyTotals>();
     weekDays.forEach(day => {
         const dayName = format(day, 'EEEE', { locale: es });
-        dailyData.set(dayName, { ventas: 0, gastos: 0 });
+        dailyData.set(dayName, emptyDailyTotals());
     });
 
+    // Las ventas directas y los abonos de apartados cuentan como ventas del día.
     ventas?.forEach(venta => {
         const ventaDate = venta.fecha.toDate();
         const dayName = format(ventaDate, 'EEEE', { locale: es });
-        if (dailyData.has(dayName)) {
-            const current = dailyData.get(dayName)!;
-            dailyData.set(dayName, { ...current, ventas: current.ventas + venta.totalVenta });
+        const current = dailyData.get(dayName);
+        if (current) {
              if (venta.metodoPago === 'EFECTIVO') {
+                current.ventasEfectivo += venta.totalVenta;
                 summary.ingresosEfectivo += venta.totalVenta;
             } else {
+                current.ventasTransferencia += venta.totalVenta;
                 summary.ingresosTransferencia += venta.totalVenta;
             }
         }
@@ -165,13 +191,13 @@ export default function ReportsPage() {
     pagos?.forEach(pago => {
         const pagoDate = pago.fecha.toDate();
         const dayName = format(pagoDate, 'EEEE', { locale: es });
-        if (dailyData.has(dayName)) {
-            const current = dailyData.get(dayName)!;
-            dailyData.set(dayName, { ...current, ventas: current.ventas + pago.monto });
-            
+        const current = dailyData.get(dayName);
+        if (current) {
             if (pago.metodoPago === 'EFECTIVO') {
+                current.ventasEfectivo += pago.monto;
                 summary.ingresosEfectivo += pago.monto;
             } else {
+                current.ventasTransferencia += pago.monto;
                 summary.ingresosTransferencia += pago.monto;
             }
         }
@@ -181,12 +207,13 @@ export default function ReportsPage() {
     gastos?.forEach(gasto => {
         const gastoDate = (gasto.fecha as Timestamp).toDate();
         const dayName = format(gastoDate, 'EEEE', { locale: es });
-         if (dailyData.has(dayName)) {
-            const current = dailyData.get(dayName)!;
-            dailyData.set(dayName, { ...current, gastos: current.gastos + gasto.monto });
+        const current = dailyData.get(dayName);
+         if (current) {
              if (gasto.metodoPago === 'EFECTIVO') {
+                current.gastosEfectivo += gasto.monto;
                 summary.gastosEfectivo += gasto.monto;
             } else {
+                current.gastosTransferencia += gasto.monto;
                 summary.gastosTransferencia += gasto.monto;
             }
         }
@@ -198,11 +225,9 @@ export default function ReportsPage() {
     summary.balanceTransferencia = summary.ingresosTransferencia - summary.gastosTransferencia;
 
 
-    const orderedDaysMap = new Map([
-        ["lunes", { ventas: 0, gastos: 0 }], ["martes", { ventas: 0, gastos: 0 }], 
-        ["miércoles", { ventas: 0, gastos: 0 }], ["jueves", { ventas: 0, gastos: 0 }], 
-        ["viernes", { ventas: 0, gastos: 0 }], ["sábado", { ventas: 0, gastos: 0 }], ["domingo", { ventas: 0, gastos: 0 }]
-    ]);
+    const orderedDaysMap = new Map<string, DailyTotals>(
+        ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"].map(d => [d, emptyDailyTotals()])
+    );
 
     dailyData.forEach((value, key) => {
         orderedDaysMap.set(key.toLowerCase(), value);
@@ -210,8 +235,7 @@ export default function ReportsPage() {
 
     const finalChartData = Array.from(orderedDaysMap.entries()).map(([day, data]) => ({
       day: day.charAt(0).toUpperCase() + day.slice(1),
-      ventas: data.ventas,
-      gastos: data.gastos,
+      ...data,
     }));
 
     return { weeklySummary: summary, chartData: finalChartData };
@@ -266,11 +290,13 @@ export default function ReportsPage() {
     doc.setFontSize(14);
     doc.text("Desglose Diario", 14, finalY + 15);
     const dailyBody = chartData.map(d => {
-        const balanceDia = d.ventas - d.gastos;
+        const ventasDia = d.ventasEfectivo + d.ventasTransferencia;
+        const gastosDia = d.gastosEfectivo + d.gastosTransferencia;
+        const balanceDia = ventasDia - gastosDia;
         return [
             d.day,
-            formatCurrency(d.ventas),
-            formatCurrency(d.gastos),
+            formatCurrency(ventasDia),
+            formatCurrency(gastosDia),
             formatCurrency(balanceDia)
         ];
     });
@@ -387,7 +413,7 @@ export default function ReportsPage() {
              </div>
           ) : (
             <ChartContainer config={chartConfig} className="h-[350px] w-full">
-              <BarChart data={chartData} margin={{ top: 5, right: 20, left: -10, bottom: 5 }}>
+              <BarChart data={chartData} margin={{ top: 5, right: 20, left: -10, bottom: 5 }} barGap={2}>
                 <CartesianGrid strokeDasharray="3 3" vertical={false}/>
                 <XAxis 
                   dataKey="day" 
@@ -416,9 +442,10 @@ export default function ReportsPage() {
                         }}
                     />} 
                   />
-                  <Legend />
-                <Bar dataKey="ventas" fill="var(--color-ventas)" radius={4} name="ventas" />
-                <Bar dataKey="gastos" fill="var(--color-gastos)" radius={4} name="gastos" />
+                  <Legend content={<ChartLegendContent className="flex-wrap text-black font-sans" />} />
+                {(Object.keys(chartConfig) as (keyof typeof chartConfig)[]).map(key => (
+                  <Bar key={key} dataKey={key} fill={`var(--color-${key})`} radius={[4, 4, 0, 0]} name={key} />
+                ))}
               </BarChart>
             </ChartContainer>
           )}

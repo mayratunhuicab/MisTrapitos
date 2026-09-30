@@ -62,7 +62,7 @@ import {
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Badge } from '@/components/ui/badge';
 import { ArrowLeft, PlusCircle, DollarSign, MoreHorizontal, Pencil, Trash2, FileDown, ArrowUpDown, FileText, Loader2, MinusCircle } from 'lucide-react';
-import { useFirestore, useDoc, useMemoFirebase, useUser } from '@/firebase';
+import { useFirestore, useDoc, useMemoFirebase, useUser, usePaginatedCollection } from '@/firebase';
 import { collection, doc, addDoc, updateDoc, deleteDoc, deleteField, serverTimestamp, runTransaction, getDocs, query, where, orderBy, collectionGroup, writeBatch, limit, startAfter, type QueryDocumentSnapshot, type DocumentData } from 'firebase/firestore';
 import { useToast } from '@/hooks/use-toast';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -379,11 +379,6 @@ export default function PacaDetailPage() {
 
   // Prendas pagination state
   const ITEMS_PER_PAGE = 50;
-  const [prendas, setPrendas] = useState<Prenda[]>([]);
-  const [isPrendasLoading, setIsPrendasLoading] = useState(true);
-  const [isLoadingMorePrendas, setIsLoadingMorePrendas] = useState(false);
-  const [lastPrendaDoc, setLastPrendaDoc] = useState<QueryDocumentSnapshot<DocumentData> | null>(null);
-  const [hasMorePrendas, setHasMorePrendas] = useState(true);
 
   // Alert Dialog State
   const [alertAction, setAlertAction] = useState<'defective' | 'deleteGroup' | null>(null);
@@ -420,64 +415,19 @@ export default function PacaDetailPage() {
     return collection(firestore, 'pacas', pacaId, 'prendas');
   }, [firestore, pacaId]);
 
-  // Antes esta función vivía solo dentro del useEffect de montaje, así que se ejecutaba
-  // UNA sola vez al abrir la pantalla. Como la lista de prendas se trae con getDocs (no
-  // con un listener en tiempo real, a propósito, para no descargar la subcolección
-  // completa de golpe), ninguna de las acciones de abajo (agregar, editar, eliminar,
-  // ajustar por defecto, actualizar precios en lote) refrescaba la lista después de
-  // guardar — por eso había que recargar la página a fuerza para ver el cambio. Ahora es
-  // una función reutilizable que se vuelve a llamar justo después de cada operación exitosa.
-  const loadInitialPrendas = useCallback(async () => {
-    if (!firestore || !pacaId || !prendasCollectionRef) {
-      setPrendas([]);
-      setIsPrendasLoading(false);
-      setHasMorePrendas(false);
-      setLastPrendaDoc(null);
-      return;
-    }
-
-    setIsPrendasLoading(true);
-    setIsLoadingMorePrendas(false);
-    setLastPrendaDoc(null);
-    setHasMorePrendas(true);
-
-    const initialQuery = query(prendasCollectionRef, orderBy('createdAt', 'asc'), limit(ITEMS_PER_PAGE));
-    const snapshot = await getDocs(initialQuery);
-
-    const initialPrendas = snapshot.docs.map((docSnapshot) => ({ id: docSnapshot.id, ...docSnapshot.data() } as Prenda));
-    setPrendas(initialPrendas);
-    setLastPrendaDoc(snapshot.docs[snapshot.docs.length - 1] ?? null);
-    setHasMorePrendas(snapshot.docs.length === ITEMS_PER_PAGE);
-    setIsPrendasLoading(false);
-  }, [firestore, pacaId, prendasCollectionRef]);
-
-  useEffect(() => {
-    if (!user) return;
-    loadInitialPrendas();
-  }, [user, loadInitialPrendas]);
-
-  const handleLoadMorePrendas = useCallback(async () => {
-    if (!firestore || !prendasCollectionRef || !lastPrendaDoc || isLoadingMorePrendas) return;
-
-    setIsLoadingMorePrendas(true);
-
-    try {
-      const nextQuery = query(
-        prendasCollectionRef,
-        orderBy('createdAt', 'asc'),
-        startAfter(lastPrendaDoc),
-        limit(ITEMS_PER_PAGE)
-      );
-      const snapshot = await getDocs(nextQuery);
-      const nextPrendas = snapshot.docs.map((docSnapshot) => ({ id: docSnapshot.id, ...docSnapshot.data() } as Prenda));
-
-      setPrendas((prevPrendas) => [...prevPrendas, ...nextPrendas]);
-      setLastPrendaDoc(snapshot.docs[snapshot.docs.length - 1] ?? null);
-      setHasMorePrendas(snapshot.docs.length === ITEMS_PER_PAGE);
-    } finally {
-      setIsLoadingMorePrendas(false);
-    }
-  }, [firestore, prendasCollectionRef, lastPrendaDoc, isLoadingMorePrendas]);
+  // Lista de prendas en tiempo real, cargada por lotes: agregar, editar, eliminar o
+  // cambiar precios se refleja al instante sin recargar y sin perder los lotes ya abiertos.
+  const prendasListQuery = useMemoFirebase(() => {
+    if (!prendasCollectionRef) return null;
+    return query(prendasCollectionRef, orderBy('createdAt', 'asc'));
+  }, [prendasCollectionRef]);
+  const {
+    data: prendas,
+    isLoading: isPrendasLoading,
+    isLoadingMore: isLoadingMorePrendas,
+    hasMore: hasMorePrendas,
+    loadMore: handleLoadMorePrendas,
+  } = usePaginatedCollection<Omit<Prenda, 'id'>>(prendasListQuery, ITEMS_PER_PAGE);
   
   useEffect(() => {
       const bq = Number(bulkQuantity);
@@ -722,7 +672,6 @@ export default function PacaDetailPage() {
         setIsAddDialogOpen(false);
         setIsEditDialogOpen(false);
         resetForm();
-        await loadInitialPrendas();
 
     } catch (error) {
         console.error("Error saving document: ", error);
@@ -787,7 +736,6 @@ export default function PacaDetailPage() {
             title: "Unidad Defectuosa Descontada",
             description: "Se ha reducido el stock en una unidad y el total de la paca se ha ajustado."
         });
-        await loadInitialPrendas();
     } catch (error) {
         console.error("Error adjusting defective unit: ", error);
         toast({ 
@@ -839,7 +787,6 @@ export default function PacaDetailPage() {
             title: "Grupo de Prendas Eliminado",
             description: "Se ha eliminado el grupo. El inventario se ha reabierto para correcciones."
         });
-        await loadInitialPrendas();
     } catch (error) {
         console.error("Error deleting prenda group: ", error);
         const errorMessage = error instanceof Error ? error.message : "No se pudo eliminar el grupo de prendas.";
@@ -1075,7 +1022,6 @@ export default function PacaDetailPage() {
             setIsBulkEditDialogOpen(false);
             setSelectedPrendas(new Set());
             setNewBulkPrice('');
-            await loadInitialPrendas();
 
         } catch (error) {
             console.error('Error updating prices in bulk:', error);

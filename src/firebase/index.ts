@@ -57,5 +57,6 @@ export * from './provider';
 export * from './client-provider';
 export { useCollection } from './firestore/use-collection';
 export { useDoc } from './firestore/use-doc';
+export { usePaginatedCollection } from './firestore/use-paginated-collection';
 export * from './errors';
 export * from './error-emitter';

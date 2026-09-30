@@ -38,7 +38,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Search, X, Trash2, ShoppingCart, DollarSign, Upload, Camera, Calendar as CalendarIcon, CircleUser, PlusCircle, MoreHorizontal, Eye, FilePlus2, Archive, ArchiveRestore } from 'lucide-react';
-import { useFirestore, useUser, useStorage, useCollection, useMemoFirebase } from '@/firebase';
+import { useFirestore, useUser, useStorage, useCollection, useMemoFirebase, usePaginatedCollection } from '@/firebase';
 import { collection, query, where, getDocs, runTransaction, doc, addDoc, collectionGroup, orderBy, Timestamp, updateDoc, writeBatch, limit, startAfter, type QueryDocumentSnapshot, type DocumentData } from 'firebase/firestore';
 import { ref as storageRef, uploadString, getDownloadURL } from "firebase/storage";
 import { useToast } from '@/hooks/use-toast';
@@ -389,63 +389,29 @@ export default function ApartadosPage() {
     const [isActionLoading, setIsActionLoading] = useState(false);
     
     // Data Fetching
-    const [apartados, setApartados] = useState<Apartado[]>([]);
-    const [isLoadingApartados, setIsLoadingApartados] = useState(true);
-    const [isLoadingMoreApartados, setIsLoadingMoreApartados] = useState(false);
-    const [hasMoreApartados, setHasMoreApartados] = useState(true);
-    const [lastApartadoDoc, setLastApartadoDoc] = useState<QueryDocumentSnapshot<DocumentData> | null>(null);
 
     // State for Archive View
     const [showArchived, setShowArchived] = useState(false);
 
-    const fetchApartadosPage = useCallback(async (append = false, cursorDoc: QueryDocumentSnapshot<DocumentData> | null = null) => {
-        if (!firestore) return;
-
-        const baseQuery = query(collection(firestore, 'apartados'), orderBy('fechaCreacion', 'desc'));
-        const pagedQuery = cursorDoc
-            ? query(baseQuery, startAfter(cursorDoc), limit(APARTADOS_PAGE_SIZE))
-            : query(baseQuery, limit(APARTADOS_PAGE_SIZE));
-
-        try {
-            if (append) {
-                setIsLoadingMoreApartados(true);
-            } else {
-                setIsLoadingApartados(true);
-            }
-
-            const snapshot = await getDocs(pagedQuery);
-            const nuevosApartados = snapshot.docs.map((docSnapshot) => ({
-                ...(docSnapshot.data() as Omit<Apartado, 'id'>),
-                id: docSnapshot.id,
-            }));
-
-            setApartados(prev => append ? [...prev, ...nuevosApartados] : nuevosApartados);
-            setLastApartadoDoc(snapshot.docs[snapshot.docs.length - 1] ?? null);
-            setHasMoreApartados(snapshot.docs.length === APARTADOS_PAGE_SIZE);
-        } catch (error) {
-            console.error('Error loading apartados:', error);
-            toast({ variant: 'destructive', title: 'Error', description: 'No se pudieron cargar los apartados.' });
-            setHasMoreApartados(false);
-        } finally {
-            setIsLoadingApartados(false);
-            setIsLoadingMoreApartados(false);
-        }
-    }, [firestore, toast]);
+    // Lista en tiempo real, cargada por lotes: los cambios aparecen sin recargar.
+    const apartadosListQuery = useMemoFirebase(() => {
+        if (!firestore || !user) return null;
+        return query(collection(firestore, 'apartados'), orderBy('fechaCreacion', 'desc'));
+    }, [firestore, user]);
+    const {
+        data: apartados,
+        isLoading: isLoadingApartados,
+        isLoadingMore: isLoadingMoreApartados,
+        hasMore: hasMoreApartados,
+        loadMore: loadMoreApartados,
+        error: apartadosError,
+    } = usePaginatedCollection<Omit<Apartado, 'id'>>(apartadosListQuery, APARTADOS_PAGE_SIZE);
 
     useEffect(() => {
-        if (!firestore) {
-            setApartados([]);
-            setLastApartadoDoc(null);
-            setHasMoreApartados(false);
-            setIsLoadingApartados(false);
-            return;
+        if (apartadosError) {
+            toast({ variant: 'destructive', title: 'Error', description: 'No se pudieron cargar los apartados.' });
         }
-
-        setApartados([]);
-        setLastApartadoDoc(null);
-        setHasMoreApartados(true);
-        void fetchApartadosPage(false, null);
-    }, [firestore, showArchived, fetchApartadosPage]);
+    }, [apartadosError, toast]);
 
     const visibleApartados = useMemo(() => {
         if (!apartados) return [];
@@ -1208,7 +1174,7 @@ export default function ApartadosPage() {
                     </Table>
                     {hasMoreApartados && (
                         <div className="mt-4 flex justify-center">
-                            <Button variant="outline" onClick={() => void fetchApartadosPage(true, lastApartadoDoc)} disabled={isLoadingMoreApartados}>
+                            <Button variant="outline" onClick={loadMoreApartados} disabled={isLoadingMoreApartados}>
                                 {isLoadingMoreApartados ? 'Cargando...' : 'Cargar más apartados'}
                             </Button>
                         </div>

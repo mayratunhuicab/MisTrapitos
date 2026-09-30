@@ -2,7 +2,7 @@
 
 import { useState, useMemo, useEffect, useCallback } from 'react';
 import Link from 'next/link';
-import { useFirestore, useCollection, useMemoFirebase, useUser, useStorage } from '@/firebase';
+import { useFirestore, useCollection, useMemoFirebase, useUser, useStorage, usePaginatedCollection } from '@/firebase';
 import { collection, collectionGroup, query, orderBy, doc, getDocs, runTransaction, getDoc, where, Timestamp, limit, startAfter, type QueryDocumentSnapshot, type DocumentData } from 'firebase/firestore';
 import { ref as storageRef, deleteObject } from 'firebase/storage';
 import { Badge } from "@/components/ui/badge";
@@ -123,11 +123,6 @@ export default function SalesHistoryPage() {
   const [isDetailDialogOpen, setIsDetailDialogOpen] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [selectedDate, setSelectedDate] = useState<Date | undefined>();
-  const [ventas, setVentas] = useState<Venta[]>([]);
-  const [isLoadingVentas, setIsLoadingVentas] = useState(true);
-  const [isLoadingMoreVentas, setIsLoadingMoreVentas] = useState(false);
-  const [hasMoreVentas, setHasMoreVentas] = useState(true);
-  const [lastVentaDoc, setLastVentaDoc] = useState<QueryDocumentSnapshot<DocumentData> | null>(null);
   
 
   // Set initial date on client to avoid hydration errors
@@ -145,56 +140,30 @@ export default function SalesHistoryPage() {
     return { start, end };
   }, [selectedDate]);
 
-  const fetchVentasPage = useCallback(async (append = false, cursorDoc: QueryDocumentSnapshot<DocumentData> | null = null) => {
-    if (!firestore || !user || !dateRange.start || !dateRange.end) return;
-
-    const baseQuery = query(
+  // Lista en tiempo real, cargada por lotes: los cambios aparecen sin recargar.
+  const ventasListQuery = useMemoFirebase(() => {
+    if (!firestore || !user || !dateRange.start || !dateRange.end) return null;
+    return query(
       collection(firestore, 'ventas'),
       where('fecha', '>=', dateRange.start),
       where('fecha', '<=', dateRange.end),
       orderBy('fecha', 'desc')
     );
-    const pagedQuery = cursorDoc
-      ? query(baseQuery, startAfter(cursorDoc), limit(VENTAS_PAGE_SIZE))
-      : query(baseQuery, limit(VENTAS_PAGE_SIZE));
-
-    try {
-      if (append) {
-        setIsLoadingMoreVentas(true);
-      } else {
-        setIsLoadingVentas(true);
-      }
-
-      const snapshot = await getDocs(pagedQuery);
-      const nuevasVentas = snapshot.docs.map((docSnapshot) => ({
-        ...(docSnapshot.data() as Omit<Venta, 'id'>),
-        id: docSnapshot.id,
-      }));
-
-      setVentas(prev => append ? [...prev, ...nuevasVentas] : nuevasVentas);
-      setLastVentaDoc(snapshot.docs[snapshot.docs.length - 1] ?? null);
-      setHasMoreVentas(snapshot.docs.length === VENTAS_PAGE_SIZE);
-    } catch (error) {
-      console.error('Error loading sales:', error);
-      toast({ variant: 'destructive', title: 'Error', description: 'No se pudieron cargar las ventas.' });
-      setHasMoreVentas(false);
-    } finally {
-      setIsLoadingVentas(false);
-      setIsLoadingMoreVentas(false);
-    }
-  }, [firestore, user, dateRange.start, dateRange.end, toast]);
+  }, [firestore, user, dateRange.start, dateRange.end]);
+  const {
+    data: ventas,
+    isLoading: isLoadingVentas,
+    isLoadingMore: isLoadingMoreVentas,
+    hasMore: hasMoreVentas,
+    loadMore: loadMoreVentas,
+    error: ventasError,
+  } = usePaginatedCollection<Omit<Venta, 'id'>>(ventasListQuery, VENTAS_PAGE_SIZE);
 
   useEffect(() => {
-    if (!firestore || !user || !dateRange.start || !dateRange.end) {
-      setVentas([]);
-      setLastVentaDoc(null);
-      setHasMoreVentas(false);
-      setIsLoadingVentas(false);
-      return;
+    if (ventasError) {
+      toast({ variant: 'destructive', title: 'Error', description: 'No se pudieron cargar las ventas.' });
     }
-
-    void fetchVentasPage(false, null);
-  }, [firestore, user, dateRange.start, dateRange.end, fetchVentasPage]);
+  }, [ventasError, toast]);
 
   const gastosQuery = useMemoFirebase(() => {
     if (!firestore || !user || !dateRange.start || !dateRange.end) return null;
@@ -715,7 +684,7 @@ const handleDeleteSale = async (ventaId: string) => {
           </Table>
           {hasMoreVentas && (
             <div className="mt-4 flex justify-center">
-              <Button variant="outline" onClick={() => void fetchVentasPage(true, lastVentaDoc)} disabled={isLoadingMoreVentas}>
+              <Button variant="outline" onClick={loadMoreVentas} disabled={isLoadingMoreVentas}>
                 {isLoadingMoreVentas ? 'Cargando...' : 'Cargar más ventas'}
               </Button>
             </div>

@@ -57,8 +57,8 @@ import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Calendar } from "@/components/ui/calendar";
 import { Badge } from "@/components/ui/badge";
-import { useFirestore, useCollection, useUser, useMemoFirebase } from "@/firebase";
-import { collection, collectionGroup, query, addDoc, doc, updateDoc, deleteDoc, Timestamp, orderBy, where, getDocs, limit, startAfter, type QueryDocumentSnapshot, type DocumentData } from "firebase/firestore";
+import { useFirestore, useCollection, useUser, useMemoFirebase, usePaginatedCollection } from "@/firebase";
+import { collection, collectionGroup, query, addDoc, doc, updateDoc, deleteDoc, Timestamp, orderBy, where } from "firebase/firestore";
 import { format, startOfWeek, endOfWeek, addDays, subDays, startOfDay, endOfDay, isWithinInterval, isSameDay } from "date-fns";
 import { es } from "date-fns/locale";
 import { PlusCircle, Calendar as CalendarIcon, MoreHorizontal, Pencil, Trash2, ChevronLeft, ChevronRight, LocateFixed } from "lucide-react";
@@ -142,62 +142,31 @@ export default function ExpensesPage() {
     const [fechaGasto, setFechaGasto] = useState<Date | undefined>(new Date());
     const [metodoPagoGasto, setMetodoPagoGasto] = useState<"EFECTIVO" | "TRANSFERENCIA">("EFECTIVO");
     const [isSubmitting, setIsSubmitting] = useState(false);
-    const [gastos, setGastos] = useState<Gasto[]>([]);
-    const [isLoadingGastos, setIsLoadingGastos] = useState(true);
-    const [isLoadingMoreGastos, setIsLoadingMoreGastos] = useState(false);
-    const [hasMoreGastos, setHasMoreGastos] = useState(true);
-    const [lastGastoDoc, setLastGastoDoc] = useState<QueryDocumentSnapshot<DocumentData> | null>(null);
-
-    const fetchGastosPage = useCallback(async (append = false, cursorDoc: QueryDocumentSnapshot<DocumentData> | null = null) => {
-        if (!firestore || !user || !dateRange.start || !dateRange.end) return;
-
-        const baseQuery = query(
+    // Lista en tiempo real, cargada por lotes: los cambios aparecen sin recargar.
+    const gastosListQuery = useMemoFirebase(() => {
+        if (!firestore || !user || !dateRange.start || !dateRange.end) return null;
+        return query(
             collection(firestore, 'gastos'),
             where('fecha', '>=', Timestamp.fromDate(dateRange.start)),
             where('fecha', '<=', Timestamp.fromDate(dateRange.end)),
             orderBy('fecha', 'desc')
         );
-        const pagedQuery = cursorDoc
-            ? query(baseQuery, startAfter(cursorDoc), limit(GASTOS_PAGE_SIZE))
-            : query(baseQuery, limit(GASTOS_PAGE_SIZE));
-
-        try {
-            if (append) {
-                setIsLoadingMoreGastos(true);
-            } else {
-                setIsLoadingGastos(true);
-            }
-
-            const snapshot = await getDocs(pagedQuery);
-            const nuevosGastos = snapshot.docs.map((docSnapshot) => ({
-                ...(docSnapshot.data() as Omit<Gasto, 'id'>),
-                id: docSnapshot.id,
-            }));
-
-            setGastos(prev => append ? [...prev, ...nuevosGastos] : nuevosGastos);
-            setLastGastoDoc(snapshot.docs[snapshot.docs.length - 1] ?? null);
-            setHasMoreGastos(snapshot.docs.length === GASTOS_PAGE_SIZE);
-        } catch (error) {
-            console.error('Error loading expenses:', error);
-            toast({ variant: 'destructive', title: 'Error', description: 'No se pudieron cargar los gastos.' });
-            setHasMoreGastos(false);
-        } finally {
-            setIsLoadingGastos(false);
-            setIsLoadingMoreGastos(false);
-        }
-    }, [firestore, user, dateRange.start, dateRange.end, toast]);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [firestore, user, dateRange.start?.getTime(), dateRange.end?.getTime()]);
+    const {
+        data: gastos,
+        isLoading: isLoadingGastos,
+        isLoadingMore: isLoadingMoreGastos,
+        hasMore: hasMoreGastos,
+        loadMore: loadMoreGastos,
+        error: gastosError,
+    } = usePaginatedCollection<Omit<Gasto, 'id'>>(gastosListQuery, GASTOS_PAGE_SIZE);
 
     useEffect(() => {
-        if (!firestore || !user || !dateRange.start || !dateRange.end) {
-            setGastos([]);
-            setLastGastoDoc(null);
-            setHasMoreGastos(false);
-            setIsLoadingGastos(false);
-            return;
+        if (gastosError) {
+            toast({ variant: 'destructive', title: 'Error', description: 'No se pudieron cargar los gastos.' });
         }
-
-        void fetchGastosPage(false, null);
-    }, [firestore, user, dateRange.start, dateRange.end, fetchGastosPage]);
+    }, [gastosError, toast]);
     
     // Fetch Ventas to validate against
     const ventasQuery = useMemoFirebase(() => {
@@ -559,7 +528,7 @@ export default function ExpensesPage() {
                 </CardContent>
                 {hasMoreGastos && (
                     <div className="mt-4 flex justify-center px-6 pb-6">
-                        <Button variant="outline" onClick={() => void fetchGastosPage(true, lastGastoDoc)} disabled={isLoadingMoreGastos}>
+                        <Button variant="outline" onClick={loadMoreGastos} disabled={isLoadingMoreGastos}>
                             {isLoadingMoreGastos ? 'Cargando...' : 'Cargar más gastos'}
                         </Button>
                     </div>

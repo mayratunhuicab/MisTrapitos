@@ -48,8 +48,8 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { useFirestore, useUser } from "@/firebase";
-import { collection, query, addDoc, doc, updateDoc, deleteDoc, serverTimestamp, orderBy, getDocs, limit, startAfter, type QueryDocumentSnapshot, type DocumentData } from "firebase/firestore";
+import { useFirestore, useUser, useMemoFirebase, usePaginatedCollection } from "@/firebase";
+import { collection, query, addDoc, doc, updateDoc, deleteDoc, serverTimestamp, orderBy } from "firebase/firestore";
 import { PlusCircle, MoreHorizontal, Pencil, Trash2, Phone } from "lucide-react";
 import { useToast } from '@/hooks/use-toast';
 import { format } from 'date-fns';
@@ -85,57 +85,25 @@ export default function ClientsPage() {
     const [telefonoCliente, setTelefonoCliente] = useState("");
     const [notasCliente, setNotasCliente] = useState("");
     const [isSubmitting, setIsSubmitting] = useState(false);
-    const [clientes, setClientes] = useState<Cliente[]>([]);
-    const [isLoadingClientes, setIsLoadingClientes] = useState(true);
-    const [isLoadingMoreClientes, setIsLoadingMoreClientes] = useState(false);
-    const [lastClienteDoc, setLastClienteDoc] = useState<QueryDocumentSnapshot<DocumentData> | null>(null);
-    const [hasMoreClientes, setHasMoreClientes] = useState(true);
-
-    const fetchClientesPage = useCallback(async (append = false, cursorDoc: QueryDocumentSnapshot<DocumentData> | null = null) => {
-        if (!firestore || !user) return;
-
-        const baseQuery = query(collection(firestore, 'clientes'), orderBy('createdAt', 'desc'));
-        const pagedQuery = cursorDoc
-            ? query(baseQuery, startAfter(cursorDoc), limit(CLIENTES_PAGE_SIZE))
-            : query(baseQuery, limit(CLIENTES_PAGE_SIZE));
-
-        try {
-            if (append) {
-                setIsLoadingMoreClientes(true);
-            } else {
-                setIsLoadingClientes(true);
-            }
-
-            const snapshot = await getDocs(pagedQuery);
-            const nuevosClientes = snapshot.docs.map((docSnapshot) => ({
-                ...(docSnapshot.data() as Omit<Cliente, 'id'>),
-                id: docSnapshot.id,
-            }));
-
-            setClientes(prev => append ? [...prev, ...nuevosClientes] : nuevosClientes);
-            setLastClienteDoc(snapshot.docs[snapshot.docs.length - 1] ?? null);
-            setHasMoreClientes(snapshot.docs.length === CLIENTES_PAGE_SIZE);
-        } catch (error) {
-            console.error('Error loading clients:', error);
-            toast({ variant: 'destructive', title: 'Error', description: 'No se pudieron cargar los clientes.' });
-            setHasMoreClientes(false);
-        } finally {
-            setIsLoadingClientes(false);
-            setIsLoadingMoreClientes(false);
-        }
-    }, [firestore, user, toast]);
+    // Lista en tiempo real, cargada por lotes: los cambios aparecen sin recargar.
+    const clientesQuery = useMemoFirebase(() => {
+        if (!firestore || !user) return null;
+        return query(collection(firestore, 'clientes'), orderBy('createdAt', 'desc'));
+    }, [firestore, user]);
+    const {
+        data: clientes,
+        isLoading: isLoadingClientes,
+        isLoadingMore: isLoadingMoreClientes,
+        hasMore: hasMoreClientes,
+        loadMore: loadMoreClientes,
+        error: clientesError,
+    } = usePaginatedCollection<Omit<Cliente, 'id'>>(clientesQuery, CLIENTES_PAGE_SIZE);
 
     useEffect(() => {
-        if (!firestore || !user) {
-            setClientes([]);
-            setLastClienteDoc(null);
-            setHasMoreClientes(false);
-            setIsLoadingClientes(false);
-            return;
+        if (clientesError) {
+            toast({ variant: 'destructive', title: 'Error', description: 'No se pudieron cargar los clientes.' });
         }
-
-        void fetchClientesPage(false, null);
-    }, [firestore, user, fetchClientesPage]);
+    }, [clientesError, toast]);
     
     const resetForm = () => {
         setSelectedCliente(null);
@@ -347,7 +315,7 @@ export default function ClientsPage() {
                     </Table>
                     {hasMoreClientes && (
                         <div className="mt-4 flex justify-center">
-                            <Button variant="outline" onClick={() => void fetchClientesPage(true, lastClienteDoc)} disabled={isLoadingMoreClientes}>
+                            <Button variant="outline" onClick={loadMoreClientes} disabled={isLoadingMoreClientes}>
                                 {isLoadingMoreClientes ? 'Cargando...' : 'Cargar más clientes'}
                             </Button>
                         </div>

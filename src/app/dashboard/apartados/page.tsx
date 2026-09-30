@@ -644,6 +644,7 @@ export default function ApartadosPage() {
                     pacaId: string;
                     idPersonalizado: string;
                     tipoPrenda: string;
+                    genero: string;
                     cantidad: number;
                     precioVenta: number;
                 }>();
@@ -658,6 +659,7 @@ export default function ApartadosPage() {
                             pacaId: unit.item.pacaId,
                             idPersonalizado: unit.item.idPersonalizado,
                             tipoPrenda: unit.item.tipoPrenda,
+                            genero: unit.item.genero || '',
                             cantidad: 1,
                             precioVenta: unit.effectivePrice,
                         });

@@ -92,6 +92,7 @@ type VentaItem = {
     cantidad: number;
     precioVenta: number;
     tipoPrenda: string;
+    genero?: string; // Solo existe en ventas registradas después de agregar este campo
 };
 
 type Gasto = {
@@ -293,7 +294,18 @@ export default function SalesHistoryPage() {
           const pacaDoc = await getDoc(pacaDocRef);
           
           const pacaName = pacaDoc.exists() ? pacaDoc.data().nombrePaca : 'Paca no encontrada';
-          return { ...item, pacaName };
+
+          // Las ventas antiguas no guardaban el género: se toma de la prenda en el inventario.
+          let genero = item.genero;
+          if (!genero && item.prendaId) {
+            try {
+              const prendaDoc = await getDoc(doc(firestore, 'pacas', item.pacaId, 'prendas', item.prendaId));
+              genero = prendaDoc.exists() ? prendaDoc.data().genero : undefined;
+            } catch (e) {
+              console.error(`Could not fetch genero for prenda ${item.prendaId}`, e);
+            }
+          }
+          return { ...item, pacaName, genero };
         } catch (e) {
           console.error(`Could not fetch paca name for pacaId ${item.pacaId}`, e);
           return { ...item, pacaName: 'Error al cargar' };
@@ -724,6 +736,7 @@ const handleDeleteSale = async (ventaId: string) => {
                     <div key={item.id} className="flex justify-between items-center text-sm p-2 rounded-md hover:bg-black/5">
                         <div className="font-semibold">
                             <p>{item.tipoPrenda} ({item.idPersonalizado})</p>
+                            <p className="text-xs text-black/60 font-normal">Género: {item.genero || 'No especificado'}</p>
                             <p className="text-xs text-black/60 font-normal">Paca: {item.pacaName}</p>
                         </div>
                         <div className="text-right">

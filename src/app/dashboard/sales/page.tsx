@@ -613,7 +613,7 @@ export default function SalesPage() {
             }
         }
         
-        const finalItemsToSave = new Map<string, {prendaId: string, pacaId: string, idPersonalizado: string, tipoPrenda: string, cantidad: number, precioVenta: number}>();
+        const finalItemsToSave = new Map<string, {prendaId: string, pacaId: string, idPersonalizado: string, tipoPrenda: string, genero: string, cantidad: number, precioVenta: number}>();
         let finalTotal = 0;
 
         for (const { item, effectivePrice } of allItemUnits) {
@@ -627,6 +627,7 @@ export default function SalesPage() {
                     pacaId: item.pacaId,
                     idPersonalizado: item.idPersonalizado,
                     tipoPrenda: item.tipoPrenda,
+                    genero: item.genero || '',
                     cantidad: 1,
                     precioVenta: effectivePrice
                 });

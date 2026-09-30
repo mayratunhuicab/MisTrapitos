@@ -64,6 +64,7 @@ import { es } from 'date-fns/locale';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Calendar } from '@/components/ui/calendar';
 import { cn } from '@/lib/utils';
+import { redondearCentavos } from '@/lib/pagos';
 
 type Prenda = {
   id: string; // Document ID
@@ -303,6 +304,8 @@ export default function SalesPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [saleDate, setSaleDate] = useState<Date | undefined>(undefined);
   const [montoPagado, setMontoPagado] = useState<number | ''>('');
+  // Pago MIXTO: cuánto paga por transferencia; el resto es efectivo.
+  const [montoTransferenciaMixto, setMontoTransferenciaMixto] = useState<number | ''>('');
 
   // State for price override dialog
   const [isPriceOverrideDialogOpen, setIsPriceOverrideDialogOpen] = useState(false);
@@ -538,7 +541,14 @@ export default function SalesPage() {
         };
     }, [cart]);
   
-  const cambio = (Number(montoPagado) || 0) - cartSummary.total;
+  const requiereComprobante = metodoPago === 'TRANSFERENCIA' || metodoPago === 'MIXTO';
+  const mixtoTransferencia = Number(montoTransferenciaMixto) || 0;
+  const mixtoEfectivo = redondearCentavos(cartSummary.total - mixtoTransferencia);
+  const mixtoValido = montoTransferenciaMixto !== '' && mixtoTransferencia > 0 && mixtoTransferencia < cartSummary.total;
+  // Efectivo que hay que cobrar: todo en EFECTIVO, solo la parte de efectivo en MIXTO.
+  const efectivoACobrar = metodoPago === 'MIXTO' ? mixtoEfectivo : cartSummary.total;
+  const cambio = (Number(montoPagado) || 0) - efectivoACobrar;
+  const faltaEfectivo = (metodoPago === 'EFECTIVO' || metodoPago === 'MIXTO') && (Number(montoPagado) || 0) < efectivoACobrar;
   
   const handleFinalizeSale = async () => {
     if (!firestore || !storage || cart.length === 0) {
@@ -557,12 +567,17 @@ export default function SalesPage() {
         return;
     }
     
-    if (metodoPago === 'EFECTIVO' && (Number(montoPagado) || 0) < cartSummary.total) {
-        toast({ variant: "destructive", title: "Monto insuficiente", description: "El monto pagado no puede ser menor que el total de la venta." });
+    if (metodoPago === 'MIXTO' && !mixtoValido) {
+        toast({ variant: "destructive", title: "Montos inválidos", description: "En pago mixto, el monto por transferencia debe ser mayor a 0 y menor que el total." });
         return;
     }
 
-    if (metodoPago === 'TRANSFERENCIA' && !paymentProof) {
+    if (faltaEfectivo) {
+        toast({ variant: "destructive", title: "Monto insuficiente", description: "El efectivo recibido no puede ser menor que lo que se paga en efectivo." });
+        return;
+    }
+
+    if (requiereComprobante && !paymentProof) {
         toast({ variant: "destructive", title: "Comprobante requerido", description: "Por favor, adjunta una imagen del comprobante de pago." });
         return;
     }
@@ -641,7 +656,7 @@ export default function SalesPage() {
 
     try {
         let paymentProofUrl = null;
-        if (metodoPago === 'TRANSFERENCIA' && paymentProof) {
+        if (requiereComprobante && paymentProof) {
           const imageRef = storageRef(storage, `comprobantes/${ventaRef.id}.png`);
           const uploadResult = await uploadString(imageRef, paymentProof, 'data_url');
           paymentProofUrl = await getDownloadURL(uploadResult.ref);
@@ -673,6 +688,12 @@ export default function SalesPage() {
             const ventaData = {
                 totalVenta: totalVenta,
                 metodoPago: metodoPago,
+                // En pago mixto se guarda cuánto entró por cada vía, para que los
+                // reportes sumen cada parte en su método sin mezclarlas.
+                ...(metodoPago === 'MIXTO' ? {
+                    montoTransferencia: redondearCentavos(Math.min(mixtoTransferencia, totalVenta)),
+                    montoEfectivo: redondearCentavos(totalVenta - Math.min(mixtoTransferencia, totalVenta)),
+                } : {}),
                 comprobanteUrl: paymentProofUrl,
                 fecha: saleDate,
                 vendedorId: user?.uid || null,
@@ -702,6 +723,7 @@ export default function SalesPage() {
         setPaymentProof(null);
         setSaleDate(new Date());
         setMontoPagado('');
+        setMontoTransferenciaMixto('');
 
     } catch (error: any) {
         // Only emit FirestorePermissionError if it's actually a permission issue.
@@ -749,8 +771,11 @@ export default function SalesPage() {
         if (fileInputRef.current) {
           fileInputRef.current.value = "";
         }
-    } else {
+    } else if (metodoPago === 'TRANSFERENCIA') {
         setMontoPagado('');
+    }
+    if (metodoPago !== 'MIXTO') {
+        setMontoTransferenciaMixto('');
     }
   }, [metodoPago])
 
@@ -981,11 +1006,40 @@ export default function SalesPage() {
                             <SelectContent className="font-sans">
                                 <SelectItem value="EFECTIVO">Efectivo</SelectItem>
                                 <SelectItem value="TRANSFERENCIA">Transferencia</SelectItem>
+                                <SelectItem value="MIXTO">Mixto (efectivo + transferencia)</SelectItem>
                             </SelectContent>
                         </Select>
                     </div>
 
-                    {metodoPago === 'TRANSFERENCIA' && (
+                    {metodoPago === 'MIXTO' && (
+                        <div className="w-full sm:w-64 space-y-2 font-sans text-black">
+                            <div>
+                                <Label htmlFor="monto-transferencia-mixto" className="font-semibold text-md mb-1">Monto por transferencia</Label>
+                                <Input
+                                    id="monto-transferencia-mixto"
+                                    type="number"
+                                    min="0"
+                                    step="0.01"
+                                    value={montoTransferenciaMixto}
+                                    onChange={(e) => setMontoTransferenciaMixto(e.target.value === '' ? '' : Number(e.target.value))}
+                                    placeholder="Ej: 20"
+                                    className="bg-white/80"
+                                    disabled={isProcessing}
+                                />
+                            </div>
+                            <div className="rounded-md bg-white/60 p-2 text-sm">
+                                <div className="flex justify-between"><span>Transferencia:</span><span className="font-bold">${mixtoTransferencia.toFixed(2)}</span></div>
+                                <div className="flex justify-between"><span>Efectivo:</span><span className="font-bold">${(mixtoValido ? mixtoEfectivo : 0).toFixed(2)}</span></div>
+                            </div>
+                            {montoTransferenciaMixto !== '' && !mixtoValido && cart.length > 0 && (
+                                <p className="text-xs font-semibold text-red-700">
+                                    Debe ser mayor a $0 y menor que el total (${cartSummary.total.toFixed(2)}).
+                                </p>
+                            )}
+                        </div>
+                    )}
+
+                    {requiereComprobante && (
                         <div className="flex flex-col gap-2 items-start">
                             <div className="flex gap-2">
                                 <Button variant="outline" className="bg-white/80 text-black" onClick={() => fileInputRef.current?.click()}>
@@ -1033,7 +1087,7 @@ export default function SalesPage() {
 
                     <AlertDialog onOpenChange={(open) => !open && setMontoPagado('')}>
                         <AlertDialogTrigger asChild>
-                            <Button className="w-full sm:w-auto font-sans text-lg text-black" variant="destructive" disabled={cart.length === 0 || isProcessing || (metodoPago === 'TRANSFERENCIA' && !paymentProof)}>
+                            <Button className="w-full sm:w-auto font-sans text-lg text-black" variant="destructive" disabled={cart.length === 0 || isProcessing || (requiereComprobante && !paymentProof) || (metodoPago === 'MIXTO' && !mixtoValido)}>
                                 {isProcessing ? 'Procesando...' : 'Finalizar Venta'}
                             </Button>
                         </AlertDialogTrigger>
@@ -1042,13 +1096,17 @@ export default function SalesPage() {
                                 <AlertDialogTitle>Confirmar Venta</AlertDialogTitle>
                                 <AlertDialogDescription>
                                     El total de la venta es <span className="font-bold">${cartSummary.total.toFixed(2)}</span>.
-                                    {metodoPago === 'EFECTIVO' ? ' Por favor, ingresa el monto recibido para calcular el cambio.' : ' ¿Deseas registrar esta venta?'}
+                                    {metodoPago === 'EFECTIVO' && ' Por favor, ingresa el monto recibido para calcular el cambio.'}
+                                    {metodoPago === 'TRANSFERENCIA' && ' ¿Deseas registrar esta venta?'}
+                                    {metodoPago === 'MIXTO' && (
+                                        <> Se paga <span className="font-bold">${mixtoTransferencia.toFixed(2)}</span> por transferencia y <span className="font-bold">${mixtoEfectivo.toFixed(2)}</span> en efectivo. Ingresa el efectivo recibido para calcular el cambio.</>
+                                    )}
                                 </AlertDialogDescription>
                             </AlertDialogHeader>
-                             {metodoPago === 'EFECTIVO' && (
+                             {(metodoPago === 'EFECTIVO' || metodoPago === 'MIXTO') && (
                                 <div className="space-y-4 my-4">
                                      <div className="space-y-2">
-                                        <Label htmlFor="montoPagado" className="font-semibold">Monto Recibido</Label>
+                                        <Label htmlFor="montoPagado" className="font-semibold">{metodoPago === 'MIXTO' ? 'Efectivo Recibido' : 'Monto Recibido'}</Label>
                                         <Input 
                                             id="montoPagado"
                                             type="number"
@@ -1071,7 +1129,7 @@ export default function SalesPage() {
                                 <AlertDialogAction 
                                     onClick={handleFinalizeSale} 
                                     className="font-sans text-sm bg-red-600 text-white hover:bg-red-700"
-                                    disabled={metodoPago === 'EFECTIVO' && (Number(montoPagado) || 0) < cartSummary.total}
+                                    disabled={faltaEfectivo}
                                 >
                                     Sí, registrar venta
                                 </AlertDialogAction>

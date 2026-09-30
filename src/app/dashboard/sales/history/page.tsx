@@ -2,6 +2,7 @@
 
 import { useState, useMemo, useEffect, useCallback } from 'react';
 import Link from 'next/link';
+import { repartirPagoVenta, etiquetaMetodoPago } from '@/lib/pagos';
 import { useFirestore, useCollection, useMemoFirebase, useUser, useStorage, usePaginatedCollection } from '@/firebase';
 import { collection, collectionGroup, query, orderBy, doc, getDocs, runTransaction, getDoc, where, Timestamp, limit, startAfter, type QueryDocumentSnapshot, type DocumentData } from 'firebase/firestore';
 import { ref as storageRef, deleteObject } from 'firebase/storage';
@@ -79,6 +80,8 @@ type Venta = {
   id: string;
   totalVenta: number;
   metodoPago: string;
+  montoEfectivo?: number;       // Solo en pago MIXTO
+  montoTransferencia?: number;  // Solo en pago MIXTO
   fecha: { seconds: number; nanoseconds: number; };
   comprobanteUrl?: string;
   vendedorId?: string;
@@ -204,11 +207,10 @@ export default function SalesHistoryPage() {
     };
     
     ventas?.forEach(venta => {
-      if (venta.metodoPago === 'EFECTIVO') {
-        summary.ingresosEfectivo += venta.totalVenta;
-      } else if (venta.metodoPago === 'TRANSFERENCIA') {
-        summary.ingresosTransferencia += venta.totalVenta;
-      }
+      // Una venta mixta suma su parte de efectivo y su parte de transferencia por separado.
+      const { efectivo, transferencia } = repartirPagoVenta(venta);
+      summary.ingresosEfectivo += efectivo;
+      summary.ingresosTransferencia += transferencia;
     });
 
     pagos?.forEach(pago => {
@@ -235,13 +237,7 @@ export default function SalesHistoryPage() {
   }, [ventas, gastos, pagos]);
 
 
-  const getMetodoPagoLabel = (metodo: string) => {
-    switch (metodo) {
-      case 'EFECTIVO': return 'Efectivo';
-      case 'TRANSFERENCIA': return 'Transferencia';
-      default: return metodo;
-    }
-  }
+  const getMetodoPagoLabel = etiquetaMetodoPago;
 
   const handleViewDetails = async (venta: Venta) => {
     if (!firestore) return;
@@ -307,7 +303,7 @@ const handleDeleteSale = async (ventaId: string) => {
         const ventaData = ventaDoc.data() as Venta;
 
         // --- Paso 2: Intentar borrar la imagen de Storage si existe ---
-        if (ventaData.comprobanteUrl && ventaData.metodoPago === 'TRANSFERENCIA') {
+        if (ventaData.comprobanteUrl && (ventaData.metodoPago === 'TRANSFERENCIA' || ventaData.metodoPago === 'MIXTO')) {
             try {
                 const imageRef = storageRef(storage, ventaData.comprobanteUrl);
                 await deleteObject(imageRef);
@@ -432,7 +428,7 @@ const handleDeleteSale = async (ventaId: string) => {
     
     let finalY = (doc as any).lastAutoTable.finalY;
     
-    const drawSalesTable = (title: string, sales: Venta[], color: [number, number, number]) => {
+    const drawSalesTable = (title: string, sales: Venta[], color: [number, number, number], showSplit = false) => {
       if (sales.length === 0) return;
 
       doc.setFontSize(14);
@@ -441,7 +437,7 @@ const handleDeleteSale = async (ventaId: string) => {
       const body: Array<Array<any>> = sales.flatMap(venta => {
           const ventaItems = allItemsMap.get(venta.id) || [];
           const mainRow: Array<any> = [
-              { content: `ID: ${venta.id.substring(0, 6).toUpperCase()} | Hora: ${format(new Date(venta.fecha.seconds * 1000), "HH:mm")}`, colSpan: 3, styles: { fontStyle: 'bold' as const, fillColor: '#f0f0f0' as const } },
+              { content: `ID: ${venta.id.substring(0, 6).toUpperCase()} | Hora: ${format(new Date(venta.fecha.seconds * 1000), "HH:mm")}` + (showSplit ? ` | Efectivo $${repartirPagoVenta(venta).efectivo.toFixed(2)} + Transf. $${repartirPagoVenta(venta).transferencia.toFixed(2)}` : ''), colSpan: 3, styles: { fontStyle: 'bold' as const, fillColor: '#f0f0f0' as const } },
               { content: `$${venta.totalVenta.toFixed(2)}`, styles: { fontStyle: 'bold' as const, halign: 'right' as const, fillColor: '#f0f0f0' as const } },
           ];
           
@@ -471,6 +467,8 @@ const handleDeleteSale = async (ventaId: string) => {
 
     drawSalesTable(`Detalle de Ventas en Efectivo (${ventasEfectivo.length})`, ventasEfectivo, [39, 174, 96]);
     drawSalesTable(`Detalle de Ventas por Transferencia (${ventasTransferencia.length})`, ventasTransferencia, [88, 86, 214]);
+    const ventasMixtas = (ventas || []).filter(v => v.metodoPago === 'MIXTO');
+    drawSalesTable(`Detalle de Ventas con Pago Mixto (${ventasMixtas.length})`, ventasMixtas, [211, 84, 0], true);
      
     // Tabla de transacciones de gastos
     if (gastos && gastos.length > 0) {
@@ -628,6 +626,12 @@ const handleDeleteSale = async (ventaId: string) => {
                       <Badge variant="secondary">
                         {getMetodoPagoLabel(venta.metodoPago)}
                       </Badge>
+                      {venta.metodoPago === 'MIXTO' && (
+                        <p className="mt-1 text-[11px] leading-tight text-black/70">
+                          Efectivo ${repartirPagoVenta(venta).efectivo.toFixed(2)}<br />
+                          Transf. ${repartirPagoVenta(venta).transferencia.toFixed(2)}
+                        </p>
+                      )}
                     </TableCell>
                     <TableCell className="text-right font-bold">${venta.totalVenta.toFixed(2)}</TableCell>
                     <TableCell className="text-right">

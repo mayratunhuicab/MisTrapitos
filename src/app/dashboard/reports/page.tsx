@@ -2,6 +2,7 @@
 "use client"
 
 import { useState, useMemo, useEffect } from "react"
+import { repartirPagoVenta } from "@/lib/pagos";
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, XAxis, YAxis, Tooltip, Legend } from "recharts"
 import jsPDF from 'jspdf';
 import 'jspdf-autotable';
@@ -34,7 +35,9 @@ interface jsPDFWithAutoTable extends jsPDF {
 type Venta = {
   id: string;
   totalVenta: number;
-  metodoPago: "EFECTIVO" | "TRANSFERENCIA";
+  metodoPago: "EFECTIVO" | "TRANSFERENCIA" | "MIXTO";
+  montoEfectivo?: number;
+  montoTransferencia?: number;
   fecha: Timestamp;
 };
 
@@ -178,13 +181,12 @@ export default function ReportsPage() {
         const dayName = format(ventaDate, 'EEEE', { locale: es });
         const current = dailyData.get(dayName);
         if (current) {
-             if (venta.metodoPago === 'EFECTIVO') {
-                current.ventasEfectivo += venta.totalVenta;
-                summary.ingresosEfectivo += venta.totalVenta;
-            } else {
-                current.ventasTransferencia += venta.totalVenta;
-                summary.ingresosTransferencia += venta.totalVenta;
-            }
+            // Una venta mixta suma su parte de efectivo y su parte de transferencia por separado.
+            const { efectivo, transferencia } = repartirPagoVenta(venta);
+            current.ventasEfectivo += efectivo;
+            current.ventasTransferencia += transferencia;
+            summary.ingresosEfectivo += efectivo;
+            summary.ingresosTransferencia += transferencia;
         }
     });
 

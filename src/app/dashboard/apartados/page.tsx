@@ -954,16 +954,17 @@ export default function ApartadosPage() {
                                     <Card>
                                         <CardHeader><CardTitle className="text-lg">Canasta de Apartado</CardTitle></CardHeader>
                                         <CardContent>
-                                            <ScrollArea className="h-48">
+                                            {/* pr-3: deja espacio a la barra de desplazamiento para que no tape el bote de eliminar */}
+                                            <ScrollArea className="h-48 pr-3">
                                                 <Table>
-                                                    <TableHeader><TableRow><TableHead>Prenda</TableHead><TableHead>Cant</TableHead><TableHead>Subtotal</TableHead><TableHead></TableHead></TableRow></TableHeader>
+                                                    <TableHeader><TableRow><TableHead className="px-1">Prenda</TableHead><TableHead className="px-1">Cant</TableHead><TableHead className="px-1 text-right">Subtotal</TableHead><TableHead className="w-8 px-0"><span className="sr-only">Quitar</span></TableHead></TableRow></TableHeader>
                                                     <TableBody>
                                                         {cart.length > 0 ? cart.map(item => (
                                                             <TableRow key={`${item.pacaId}-${item.id}`}>
-                                                                <TableCell className="text-xs">{item.idPersonalizado}<br/>{item.tipoPrenda}</TableCell>
-                                                                <TableCell><Input type="number" value={item.cantidadEnCarrito} onChange={(e) => updateCartQuantity(item.id, item.pacaId, e.target.value)} className="w-14 h-8 text-center" min="1" max={item.cantidad}/></TableCell>
-                                                                <TableCell className="font-bold text-right">${(cartPricing.subtotalPorItem.get(`${item.pacaId}-${item.id}`) ?? 0).toFixed(2)}</TableCell>
-                                                                <TableCell><Button variant="ghost" size="icon" onClick={() => removeFromCart(item.id, item.pacaId)}><Trash2 className="h-4 w-4 text-red-600" /></Button></TableCell>
+                                                                <TableCell className="text-xs px-1 py-2"><span className="font-semibold">{item.idPersonalizado}</span><br/>{item.tipoPrenda}</TableCell>
+                                                                <TableCell className="px-1 py-2"><Input type="number" value={item.cantidadEnCarrito} onChange={(e) => updateCartQuantity(item.id, item.pacaId, e.target.value)} className="w-12 h-8 px-1 text-center" min="1" max={item.cantidad}/></TableCell>
+                                                                <TableCell className="font-bold text-right px-1 py-2 whitespace-nowrap">${(cartPricing.subtotalPorItem.get(`${item.pacaId}-${item.id}`) ?? 0).toFixed(2)}</TableCell>
+                                                                <TableCell className="w-8 px-0 py-2"><Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => removeFromCart(item.id, item.pacaId)} aria-label={`Quitar ${item.idPersonalizado}`}><Trash2 className="h-4 w-4 text-red-600" /></Button></TableCell>
                                                             </TableRow>
                                                         )) : <TableRow><TableCell colSpan={4} className="h-24 text-center">La canasta está vacía</TableCell></TableRow>}
                                                     </TableBody>

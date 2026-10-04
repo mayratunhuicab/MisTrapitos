@@ -18,6 +18,8 @@ export type ComponentePromo = {
   nombre: string;     // Ej: "Pantalón quirúrgico"
   cantidad: number;   // Cuántas prendas de este componente lleva el paquete
   prendas: string[];  // prendaPromoKey de las prendas que valen para este componente
+  /** Precio de cada pieza de este componente dentro de la promoción (ej. pantalón $65). */
+  precioUnitario?: number;
 };
 
 export type PromoEspecial = {
@@ -77,10 +79,11 @@ const cents = (n: number) => Math.round(n * 100) / 100;
 type Oferta = {
   nombre: string;
   precio: number;
-  slots: { cantidad: number; tipos: number[] }[]; // tipos = índices de renglones válidos
+  slots: { cantidad: number; tipos: number[]; precioUnitario?: number }[]; // tipos = índices de renglones válidos
 };
-// Un "llenado" de una oferta: cuántas unidades toma de cada tipo.
-type Llenado = { usa: number[] };
+// Un "llenado" de una oferta: cuántas unidades toma de cada tipo, y qué tipos
+// quedaron en cada parte (slot) del paquete.
+type Llenado = { usa: number[]; porSlot: number[][] };
 
 const MAX_ESTADOS = 20000;
 
@@ -136,6 +139,7 @@ export function computeCartPricing<T extends CartLineForPricing>(cart: T[]): Car
       const validas = new Set(c.prendas || []);
       return {
         cantidad: Number(c.cantidad) || 0,
+        precioUnitario: c.precioUnitario,
         tipos: tipos.map((t, idx) => (validas.has(prendaPromoKey(t.pacaId, t.id)) ? idx : -1)).filter(i => i >= 0),
       };
     });
@@ -148,9 +152,10 @@ export function computeCartPricing<T extends CartLineForPricing>(cart: T[]): Car
   const llenados = (oferta: Oferta, counts: number[]): Llenado[] => {
     const result: Llenado[] = [];
     const usa = new Array(counts.length).fill(0);
+    const porSlot: number[][] = oferta.slots.map(() => []);
     const llenarSlot = (s: number) => {
       if (s === oferta.slots.length) {
-        result.push({ usa: [...usa] });
+        result.push({ usa: [...usa], porSlot: porSlot.map(t => [...t]) });
         return;
       }
       const slot = oferta.slots[s];
@@ -164,7 +169,9 @@ export function computeCartPricing<T extends CartLineForPricing>(cart: T[]): Car
           const tipo = slot.tipos[k];
           if (counts[tipo] - usa[tipo] > 0) {
             usa[tipo]++;
+            porSlot[s].push(tipo);
             elegir(k, faltan - 1);
+            porSlot[s].pop();
             usa[tipo]--;
           }
         }
@@ -251,18 +258,34 @@ export function computeCartPricing<T extends CartLineForPricing>(cart: T[]): Car
     const oferta = ofertas[ofertaIdx];
     const unidades: number[] = [];
     llenado.usa.forEach((u, i) => { for (let k = 0; k < u; k++) unidades.push(i); });
-    const sumaSuelta = unidades.reduce((s, i) => s + precios[i], 0);
-    // El precio del paquete se reparte en proporción al precio suelto de cada prenda
-    // (así las ganancias por paca salen bien); los centavos sobrantes van a la última.
-    let asignado = 0;
-    unidades.forEach((i, n) => {
-      const precio = n === unidades.length - 1
-        ? cents(oferta.precio - asignado)
-        : cents(sumaSuelta > 0 ? (oferta.precio * precios[i]) / sumaSuelta : oferta.precio / unidades.length);
-      asignado = cents(asignado + precio);
-      pricedUnits.push({ key: lineKey(tipos[i]), item: tipos[i], effectivePrice: precio });
-      restantes[i]--;
-    });
+
+    // Si la promoción dice cuánto vale cada pieza (ej. blusa $45 + pantalón $65),
+    // se cobra exactamente eso.
+    if (oferta.slots.every(sl => typeof sl.precioUnitario === 'number' && sl.precioUnitario >= 0)) {
+      llenado.porSlot.forEach((tiposSlot, si) => {
+        tiposSlot.forEach(i => {
+          pricedUnits.push({ key: lineKey(tipos[i]), item: tipos[i], effectivePrice: cents(oferta.slots[si].precioUnitario!) });
+          restantes[i]--;
+        });
+      });
+    } else {
+      // Promociones sin precio por pieza: el precio del paquete se reparte en proporción
+      // al precio suelto de cada prenda (así las ganancias por paca salen bien). Si el
+      // paquete cuesta pesos cerrados, se reparte en pesos enteros para no mostrar
+      // decimales (ej. $110 -> $72 + $38); lo que sobre del redondeo va a la última
+      // prenda, así el total siempre cuadra.
+      const sumaSuelta = unidades.reduce((s, i) => s + precios[i], 0);
+      const redondear = Number.isInteger(oferta.precio) ? Math.round : cents;
+      let asignado = 0;
+      unidades.forEach((i, n) => {
+        const precio = n === unidades.length - 1
+          ? cents(oferta.precio - asignado)
+          : redondear(sumaSuelta > 0 ? (oferta.precio * precios[i]) / sumaSuelta : oferta.precio / unidades.length);
+        asignado = cents(asignado + precio);
+        pricedUnits.push({ key: lineKey(tipos[i]), item: tipos[i], effectivePrice: precio });
+        restantes[i]--;
+      });
+    }
     const prev = aplicadas.get(oferta.nombre);
     aplicadas.set(oferta.nombre, { nombre: oferta.nombre, precio: oferta.precio, veces: (prev?.veces || 0) + 1 });
   });

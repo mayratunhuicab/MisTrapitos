@@ -79,6 +79,7 @@ type PrendaEnPromo = {
 type Componente = {
   nombre: string;
   cantidad: number | '';
+  precioUnitario: number | ''; // precio de cada pieza de esta parte dentro de la promo
   prendas: PrendaEnPromo[];
 };
 
@@ -87,7 +88,7 @@ type PromoDoc = {
   tipo: 'especial';
   nombre: string;
   precio: number;
-  componentes: { nombre: string; cantidad: number; prendas: PrendaEnPromo[] }[];
+  componentes: { nombre: string; cantidad: number; precioUnitario?: number; prendas: PrendaEnPromo[] }[];
 };
 
 type PrendaBuscable = PrendaEnPromo & { cantidad: number };
@@ -96,7 +97,11 @@ function normalizeText(text: string): string {
   return (text || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
 }
 
-const nuevoComponente = (): Componente => ({ nombre: '', cantidad: 1, prendas: [] });
+const nuevoComponente = (): Componente => ({ nombre: '', cantidad: 1, precioUnitario: '', prendas: [] });
+
+/** Precio del paquete = suma de (cantidad x precio por pieza) de cada parte. */
+const precioPaquete = (componentes: { cantidad: number | ''; precioUnitario?: number | '' }[]) =>
+  componentes.reduce((sum, c) => sum + (Number(c.cantidad) || 0) * (Number(c.precioUnitario) || 0), 0);
 
 const formatMoney = (n: number) => `$${n.toFixed(2)}`;
 
@@ -114,8 +119,15 @@ function rangoSuelto(componentes: { cantidad: number | ''; prendas: PrendaEnProm
   return { min, max };
 }
 
-const describirPaquete = (componentes: { nombre: string; cantidad: number | '' }[]) =>
-  componentes.map(c => `${c.cantidad} ${c.nombre || '(sin nombre)'}`).join(' + ');
+/** Nombre de una parte del paquete: el tipo de la primera prenda agregada (ej. "Pantalón quirúrgico"). */
+const nombreParte = (c: { nombre?: string; prendas?: { tipoPrenda: string }[] }) =>
+  c.prendas?.[0]?.tipoPrenda || c.nombre?.trim() || 'prenda';
+
+const describirPaquete = (componentes: { nombre?: string; cantidad: number | ''; precioUnitario?: number | ''; prendas?: { tipoPrenda: string }[] }[]) =>
+  componentes.map(c => {
+    const pu = Number(c.precioUnitario);
+    return `${c.cantidad} ${nombreParte(c)}${pu > 0 ? ` ($${pu} c/u)` : ''}`;
+  }).join(' + ');
 
 export function PromosEspecialesSection() {
   const firestore = useFirestore();
@@ -131,7 +143,6 @@ export function PromosEspecialesSection() {
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [editing, setEditing] = useState<PromoDoc | null>(null);
   const [nombre, setNombre] = useState('');
-  const [precio, setPrecio] = useState<number | ''>('');
   const [componentes, setComponentes] = useState<Componente[]>([nuevoComponente()]);
   const [isSaving, setIsSaving] = useState(false);
   const [promoToDelete, setPromoToDelete] = useState<PromoDoc | null>(null);
@@ -146,7 +157,6 @@ export function PromosEspecialesSection() {
   const resetForm = () => {
     setEditing(null);
     setNombre('');
-    setPrecio('');
     setComponentes([nuevoComponente()]);
     setActiveComp(null);
     setSearchText('');
@@ -161,8 +171,8 @@ export function PromosEspecialesSection() {
   const handleOpenEdit = (promo: PromoDoc) => {
     setEditing(promo);
     setNombre(promo.nombre);
-    setPrecio(promo.precio);
-    setComponentes((promo.componentes || []).map(c => ({ ...c, prendas: [...(c.prendas || [])] })));
+    // Promociones creadas antes de existir el precio por pieza lo traen vacío: hay que llenarlo.
+    setComponentes((promo.componentes || []).map(c => ({ ...c, precioUnitario: c.precioUnitario ?? '', prendas: [...(c.prendas || [])] })));
     setActiveComp(null);
     setSearchText('');
     setResults(null);
@@ -236,23 +246,19 @@ export function PromosEspecialesSection() {
     }
   };
 
-  const numPrecio = Number(precio) || 0;
+  const numPrecio = precioPaquete(componentes);
   const rango = useMemo(() => rangoSuelto(componentes), [componentes]);
 
   const handleSave = async () => {
     if (!firestore) return;
-    const comps = componentes.map(c => ({ ...c, nombre: c.nombre.trim(), cantidad: Number(c.cantidad) || 0 }));
+    const comps = componentes.map(c => ({ ...c, nombre: nombreParte(c), cantidad: Number(c.cantidad) || 0, precioUnitario: Number(c.precioUnitario) || 0 }));
 
     if (!nombre.trim()) {
       toast({ variant: 'destructive', title: 'Falta el nombre de la promoción' });
       return;
     }
-    if (numPrecio <= 0) {
-      toast({ variant: 'destructive', title: 'Precio inválido', description: 'Escribe el precio de la promoción.' });
-      return;
-    }
     if (comps.length === 0) {
-      toast({ variant: 'destructive', title: 'Agrega al menos un componente' });
+      toast({ variant: 'destructive', title: 'Agrega al menos una prenda al paquete' });
       return;
     }
     const totalPrendas = comps.reduce((s, c) => s + c.cantidad, 0);
@@ -260,9 +266,9 @@ export function PromosEspecialesSection() {
       toast({ variant: 'destructive', title: 'Promoción muy pequeña', description: 'El paquete debe llevar al menos 2 prendas en total.' });
       return;
     }
-    const incompleto = comps.find(c => !c.nombre || c.cantidad <= 0 || c.prendas.length === 0);
+    const incompleto = comps.find(c => c.cantidad <= 0 || c.precioUnitario <= 0 || c.prendas.length === 0);
     if (incompleto) {
-      toast({ variant: 'destructive', title: 'Componente incompleto', description: 'Cada componente necesita nombre, cantidad y al menos una prenda.' });
+      toast({ variant: 'destructive', title: 'Falta información', description: 'Cada parte del paquete necesita cantidad, precio por pieza y al menos una prenda.' });
       return;
     }
 
@@ -287,6 +293,7 @@ export function PromosEspecialesSection() {
         componentes: comps.map(c => ({
           nombre: c.nombre,
           cantidad: c.cantidad,
+          precioUnitario: c.precioUnitario,
           prendas: c.prendas.map(p => prendaPromoKey(p.pacaId, p.prendaId)),
         })),
       };
@@ -422,7 +429,7 @@ export function PromosEspecialesSection() {
           <DialogHeader>
             <DialogTitle>{editing ? 'Editar Promoción Especial' : 'Nueva Promoción Especial'}</DialogTitle>
             <DialogDescription>
-              Arma el paquete con uno o más componentes. Cada componente dice cuántas prendas lleva y cuáles valen para él.
+              Busca las prendas de la promoción y pon cuánto vale cada una dentro del paquete. Si el paquete lleva prendas distintas (ej. filipina + pantalón), agrega otra parte.
             </DialogDescription>
           </DialogHeader>
           <ScrollArea className="max-h-[65vh] -mx-6 px-6">
@@ -433,94 +440,104 @@ export function PromosEspecialesSection() {
                   <Input id="promo-nombre" placeholder='Ej: "Filipina + pantalón"' value={nombre} onChange={(e) => setNombre(e.target.value)} disabled={isSaving} className="bg-white/80" />
                 </div>
                 <div className="space-y-2">
-                  <Label htmlFor="promo-precio">Precio del paquete ($)</Label>
-                  <Input id="promo-precio" type="number" min="0" step="0.01" placeholder="Ej: 110" value={precio} onChange={(e) => setPrecio(e.target.value === '' ? '' : Number(e.target.value))} disabled={isSaving} className="bg-white/80" />
+                  <Label>Precio del paquete</Label>
+                  <p className="h-10 flex items-center text-2xl font-bold">{formatMoney(numPrecio)}</p>
+                  <p className="text-xs text-black/60 -mt-1">Se calcula con el precio de cada pieza.</p>
                 </div>
               </div>
 
-              {componentes.map((comp, idx) => (
-                <Card key={idx} className={activeComp === idx ? 'border-2 border-black' : ''}>
+              {componentes.map((comp, idx) => {
+                const esActiva = activeComp === idx;
+                return (
+                <Card key={idx} className={esActiva ? 'border-2 border-black' : ''}>
                   <CardContent className="space-y-3 pt-4">
+                    {componentes.length > 1 && (
+                      <p className="text-sm font-semibold">
+                        Parte {idx + 1}{comp.prendas.length > 0 ? `: ${nombreParte(comp)}` : ''}
+                      </p>
+                    )}
                     <div className="flex items-end gap-2">
                       <div className="space-y-1 w-20">
                         <Label htmlFor={`comp-cant-${idx}`}>Cantidad</Label>
                         <Input id={`comp-cant-${idx}`} type="number" min="1" value={comp.cantidad} onChange={(e) => updateComponente(idx, { cantidad: e.target.value === '' ? '' : Number(e.target.value) })} disabled={isSaving} className="bg-white/80" />
                       </div>
-                      <div className="space-y-1 flex-1">
-                        <Label htmlFor={`comp-nombre-${idx}`}>Componente {idx + 1}</Label>
-                        <Input id={`comp-nombre-${idx}`} placeholder='Ej: "Pantalón quirúrgico"' value={comp.nombre} onChange={(e) => updateComponente(idx, { nombre: e.target.value })} disabled={isSaving} className="bg-white/80" />
+                      <div className="space-y-1 w-28">
+                        <Label htmlFor={`comp-precio-${idx}`} className="whitespace-nowrap">Precio c/u ($)</Label>
+                        <Input id={`comp-precio-${idx}`} type="number" min="0" step="0.01" placeholder="Ej: 65" value={comp.precioUnitario} onChange={(e) => updateComponente(idx, { precioUnitario: e.target.value === '' ? '' : Number(e.target.value) })} disabled={isSaving} className="bg-white/80" />
                       </div>
+                      <div className="flex-1" />
                       {componentes.length > 1 && (
-                        <Button variant="ghost" size="icon" onClick={() => removeComponente(idx)} disabled={isSaving} title="Quitar componente">
+                        <Button variant="ghost" size="icon" onClick={() => removeComponente(idx)} disabled={isSaving} title="Quitar esta parte">
                           <Trash2 className="h-4 w-4 text-red-600" />
                         </Button>
                       )}
                     </div>
 
+                    <form onSubmit={handleSearch} className="flex gap-2">
+                      <Input
+                        placeholder="Buscar prenda por ID o nombre (ej: P5-2 o pantalon)"
+                        value={esActiva ? searchText : ''}
+                        onFocus={() => { if (!esActiva) { setActiveComp(idx); setSearchText(''); setResults(null); } }}
+                        onChange={(e) => setSearchText(e.target.value)}
+                        className="bg-white/80"
+                        disabled={isSaving}
+                      />
+                      <Button type="submit" size="icon" variant="destructive" className="text-black" disabled={isSaving || isSearching || !esActiva}>
+                        <Search className="h-4 w-4" />
+                      </Button>
+                    </form>
+
+                    {esActiva && results && results.length > 0 && (
+                      <div className="rounded-md border bg-white/80">
+                        <div className="flex items-center justify-between px-3 py-2 text-sm font-semibold">
+                          <span>{results.length} resultado(s)</span>
+                          <Button type="button" size="sm" variant="outline" onClick={() => addPrendasToComponente(idx, results)} disabled={isSaving}>
+                            Agregar todas
+                          </Button>
+                        </div>
+                        <ul className="max-h-48 overflow-y-auto divide-y">
+                          {results.map(r => {
+                            const yaEsta = activeKeys.has(prendaPromoKey(r.pacaId, r.prendaId));
+                            return (
+                              <li key={prendaPromoKey(r.pacaId, r.prendaId)}>
+                                <button
+                                  type="button"
+                                  disabled={yaEsta || isSaving}
+                                  onClick={() => addPrendasToComponente(idx, [r])}
+                                  className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left text-sm hover:bg-black/5 disabled:opacity-50"
+                                >
+                                  <span><span className="font-semibold">{r.idPersonalizado}</span> {r.tipoPrenda} {r.genero} {r.talla ? `Talla ${r.talla}` : ''}</span>
+                                  <span className="shrink-0 text-xs text-right">
+                                    {formatMoney(r.precio)}
+                                    <span className="block text-black/60">{yaEsta ? 'Ya agregada' : `Stock: ${r.cantidad}`}</span>
+                                  </span>
+                                </button>
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      </div>
+                    )}
+
                     <div className="flex flex-wrap gap-1">
                       {comp.prendas.length > 0 ? comp.prendas.map(p => (
                         <Badge key={prendaPromoKey(p.pacaId, p.prendaId)} variant="outline" className="text-xs gap-1 bg-white/60">
-                          <span className="font-semibold">{p.idPersonalizado}</span> {p.tipoPrenda} {p.talla ? `T${p.talla}` : ''} · {formatMoney(p.precio)}
+                          <span className="font-semibold">{p.idPersonalizado}</span> {p.tipoPrenda} {p.talla ? `T${p.talla}` : ''} · suelta {formatMoney(p.precio)}
                           <button type="button" onClick={() => removePrenda(idx, p)} disabled={isSaving} aria-label={`Quitar ${p.idPersonalizado}`}>
                             <X className="h-3 w-3 text-red-600" />
                           </button>
                         </Badge>
                       )) : (
-                        <p className="text-xs text-black/60">Aún no hay prendas en este componente.</p>
+                        <p className="text-xs text-black/60">Aún no hay prendas aquí. Búscalas arriba.</p>
                       )}
                     </div>
-
-                    {activeComp === idx ? (
-                      <div className="space-y-2">
-                        <form onSubmit={handleSearch} className="flex gap-2">
-                          <Input placeholder="ID o nombre (ej: P5-2 o pantalon)" value={searchText} onChange={(e) => setSearchText(e.target.value)} className="bg-white/80" disabled={isSaving} autoFocus />
-                          <Button type="submit" size="icon" variant="destructive" className="text-black" disabled={isSaving || isSearching}>
-                            <Search className="h-4 w-4" />
-                          </Button>
-                        </form>
-                        {results && results.length > 0 && (
-                          <div className="rounded-md border bg-white/80">
-                            <div className="flex items-center justify-between px-3 py-2 text-sm font-semibold">
-                              <span>{results.length} resultado(s)</span>
-                              <Button type="button" size="sm" variant="outline" onClick={() => addPrendasToComponente(idx, results)} disabled={isSaving}>
-                                Agregar todas
-                              </Button>
-                            </div>
-                            <ul className="max-h-48 overflow-y-auto divide-y">
-                              {results.map(r => {
-                                const yaEsta = activeKeys.has(prendaPromoKey(r.pacaId, r.prendaId));
-                                return (
-                                  <li key={prendaPromoKey(r.pacaId, r.prendaId)}>
-                                    <button
-                                      type="button"
-                                      disabled={yaEsta || isSaving}
-                                      onClick={() => addPrendasToComponente(idx, [r])}
-                                      className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left text-sm hover:bg-black/5 disabled:opacity-50"
-                                    >
-                                      <span><span className="font-semibold">{r.idPersonalizado}</span> {r.tipoPrenda} {r.genero} {r.talla ? `Talla ${r.talla}` : ''}</span>
-                                      <span className="shrink-0 text-xs text-right">
-                                        {formatMoney(r.precio)}
-                                        <span className="block text-black/60">{yaEsta ? 'Ya agregada' : `Stock: ${r.cantidad}`}</span>
-                                      </span>
-                                    </button>
-                                  </li>
-                                );
-                              })}
-                            </ul>
-                          </div>
-                        )}
-                      </div>
-                    ) : (
-                      <Button type="button" variant="outline" size="sm" onClick={() => { setActiveComp(idx); setResults(null); setSearchText(''); }} disabled={isSaving}>
-                        <Search className="mr-2 h-4 w-4" /> Agregar prendas
-                      </Button>
-                    )}
                   </CardContent>
                 </Card>
-              ))}
+                );
+              })}
 
               <Button type="button" variant="outline" onClick={() => setComponentes(prev => [...prev, nuevoComponente()])} disabled={isSaving}>
-                <PlusCircle className="mr-2 h-4 w-4" /> Agregar componente
+                <PlusCircle className="mr-2 h-4 w-4" /> Agregar otra prenda distinta al paquete
               </Button>
 
               {numPrecio > 0 && (

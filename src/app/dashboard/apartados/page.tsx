@@ -37,10 +37,10 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Search, X, Trash2, ShoppingCart, DollarSign, Upload, Camera, Calendar as CalendarIcon, CircleUser, PlusCircle, MoreHorizontal, Eye, FilePlus2, Archive, ArchiveRestore } from 'lucide-react';
+import { Search, X, Trash2, ShoppingCart, DollarSign, Upload, Camera, Calendar as CalendarIcon, CircleUser, PlusCircle, MoreHorizontal, Eye, FilePlus2, Archive, ArchiveRestore, PackageCheck, Undo2, ExternalLink } from 'lucide-react';
 import { useFirestore, useUser, useStorage, useCollection, useMemoFirebase, usePaginatedCollection } from '@/firebase';
 import { computeCartPricing, type PromoEspecial } from '@/lib/ofertas';
-import { collection, query, where, getDocs, getDoc, runTransaction, doc, addDoc, collectionGroup, orderBy, Timestamp, updateDoc, writeBatch, limit, startAfter, type QueryDocumentSnapshot, type DocumentData } from 'firebase/firestore';
+import { collection, query, where, getDocs, getDoc, runTransaction, doc, addDoc, collectionGroup, orderBy, Timestamp, updateDoc, deleteField, writeBatch, limit, startAfter, type QueryDocumentSnapshot, type DocumentData } from 'firebase/firestore';
 import { ref as storageRef, uploadString, getDownloadURL } from "firebase/storage";
 import { useToast } from '@/hooks/use-toast';
 import {
@@ -113,6 +113,21 @@ type Apartado = {
     totalApartado: number;
     totalPagado: number;
     archivado?: boolean;
+    fechaCreacion?: Timestamp;  // día en que se apartó
+    entregado?: boolean;        // ya se le entregó la ropa al cliente
+    fechaEntrega?: Timestamp;   // día en que se entregó
+};
+
+// Firestore devuelve Timestamp; por si acaso también se acepta Date.
+const toDateSafe = (value: unknown): Date | null => {
+    if (!value) return null;
+    if (value instanceof Date) return value;
+    if (typeof (value as Timestamp).toDate === 'function') return (value as Timestamp).toDate();
+    return null;
+};
+const formatFecha = (value: unknown) => {
+    const d = toDateSafe(value);
+    return d ? format(d, "dd/MM/yyyy") : '—';
 };
 
 const APARTADOS_PAGE_SIZE = 50;
@@ -307,6 +322,9 @@ export default function ApartadosPage() {
     const [isCancelAlertOpen, setIsCancelAlertOpen] = useState(false);
     const [isDeleteAlertOpen, setIsDeleteAlertOpen] = useState(false);
     const [isActionLoading, setIsActionLoading] = useState(false);
+    // Marcar como entregado
+    const [apartadoAEntregar, setApartadoAEntregar] = useState<Apartado | null>(null);
+    const [fechaEntregaInput, setFechaEntregaInput] = useState('');
     
     // Data Fetching
 
@@ -872,6 +890,50 @@ export default function ApartadosPage() {
         }
     };
     
+    const handleOpenEntrega = (apartado: Apartado) => {
+        setApartadoAEntregar(apartado);
+        setFechaEntregaInput(format(new Date(), 'yyyy-MM-dd'));
+    };
+
+    const handleConfirmEntrega = async () => {
+        if (!firestore || !apartadoAEntregar || !fechaEntregaInput) return;
+        setIsActionLoading(true);
+        try {
+            // La fecha del input viene como "aaaa-mm-dd"; se guarda a mediodía para que no
+            // cambie de día por la zona horaria.
+            const [y, m, d] = fechaEntregaInput.split('-').map(Number);
+            const fecha = new Date(y, m - 1, d, 12, 0, 0);
+            await updateDoc(doc(firestore, 'apartados', apartadoAEntregar.id), {
+                entregado: true,
+                fechaEntrega: Timestamp.fromDate(fecha),
+            });
+            toast({ variant: 'success', title: 'Apartado entregado', description: `${apartadoAEntregar.clienteNombre} · ${format(fecha, 'dd/MM/yyyy')}` });
+            setApartadoAEntregar(null);
+        } catch (error) {
+            console.error('Error marking apartado as delivered:', error);
+            toast({ variant: 'destructive', title: 'Error', description: 'No se pudo marcar como entregado.' });
+        } finally {
+            setIsActionLoading(false);
+        }
+    };
+
+    const handleQuitarEntrega = async (apartado: Apartado) => {
+        if (!firestore) return;
+        setIsActionLoading(true);
+        try {
+            await updateDoc(doc(firestore, 'apartados', apartado.id), {
+                entregado: false,
+                fechaEntrega: deleteField(),
+            });
+            toast({ variant: 'success', title: 'Entrega quitada', description: 'El apartado vuelve a estar pendiente de entrega.' });
+        } catch (error) {
+            console.error('Error removing delivery:', error);
+            toast({ variant: 'destructive', title: 'Error', description: 'No se pudo quitar la entrega.' });
+        } finally {
+            setIsActionLoading(false);
+        }
+    };
+
     const handleArchive = async (apartado: Apartado, archive: boolean) => {
         if (!firestore) return;
         setIsActionLoading(true);
@@ -1102,13 +1164,15 @@ export default function ApartadosPage() {
                                 <TableHead>Estado</TableHead>
                                 <TableHead>Total</TableHead>
                                 <TableHead>Saldo Pendiente</TableHead>
+                                <TableHead>Fecha de Apartado</TableHead>
                                 <TableHead>Fecha de Vencimiento</TableHead>
+                                <TableHead>Entrega</TableHead>
                                 <TableHead className="text-right">Acciones</TableHead>
                             </TableRow>
                         </TableHeader>
                         <TableBody>
                             {isLoadingApartados ? (
-                                <TableRow><TableCell colSpan={6} className="h-24 text-center">Cargando apartados...</TableCell></TableRow>
+                                <TableRow><TableCell colSpan={8} className="h-24 text-center">Cargando apartados...</TableCell></TableRow>
                             ) : visibleApartados && visibleApartados.length > 0 ? (
                                 visibleApartados.map(apartado => {
                                     const saldoPendiente = (apartado.totalApartado || 0) - (apartado.totalPagado || 0);
@@ -1118,7 +1182,17 @@ export default function ApartadosPage() {
                                             <TableCell><Badge variant={getStatusVariant(apartado.estado)}>{apartado.estado}</Badge></TableCell>
                                             <TableCell>${(apartado.totalApartado || 0).toFixed(2)}</TableCell>
                                             <TableCell className="font-bold">${saldoPendiente > 0.009 ? saldoPendiente.toFixed(2) : '0.00'}</TableCell>
+                                            <TableCell>{formatFecha(apartado.fechaCreacion)}</TableCell>
                                             <TableCell>{format(apartado.fechaVencimiento.toDate(), "dd/MM/yyyy")}</TableCell>
+                                            <TableCell>
+                                                {apartado.entregado ? (
+                                                    <Badge className="bg-green-700 text-white hover:bg-green-700 whitespace-nowrap">Entregado {formatFecha(apartado.fechaEntrega)}</Badge>
+                                                ) : apartado.estado === 'CANCELADO' ? (
+                                                    <span className="text-xs text-black/60">—</span>
+                                                ) : (
+                                                    <Badge variant="outline" className="whitespace-nowrap">Pendiente</Badge>
+                                                )}
+                                            </TableCell>
                                             <TableCell className="text-right">
                                                 <div className="flex justify-end items-center gap-2">
                                                     {apartado.estado === 'VIGENTE' && !showArchived && (
@@ -1145,6 +1219,18 @@ export default function ApartadosPage() {
                                                             {apartado.estado === 'VIGENTE' && (
                                                                 <DropdownMenuItem onClick={() => handleOpenPaymentDialog(apartado, true)}>
                                                                     <DollarSign className="mr-2 h-4 w-4" /> Liquidar Saldo
+                                                                </DropdownMenuItem>
+                                                            )}
+
+                                                            {!apartado.entregado && apartado.estado !== 'CANCELADO' && (
+                                                                <DropdownMenuItem onClick={() => handleOpenEntrega(apartado)}>
+                                                                    <PackageCheck className="mr-2 h-4 w-4" /> Marcar como entregado
+                                                                </DropdownMenuItem>
+                                                            )}
+
+                                                            {apartado.entregado && (
+                                                                <DropdownMenuItem onClick={() => handleQuitarEntrega(apartado)} disabled={isActionLoading}>
+                                                                    <Undo2 className="mr-2 h-4 w-4" /> Quitar entrega
                                                                 </DropdownMenuItem>
                                                             )}
 
@@ -1187,7 +1273,7 @@ export default function ApartadosPage() {
                                     )
                                 })
                             ) : (
-                                <TableRow><TableCell colSpan={6} className="h-24 text-center">No hay apartados {showArchived ? 'archivados' : 'registrados'}.</TableCell></TableRow>
+                                <TableRow><TableCell colSpan={8} className="h-24 text-center">No hay apartados {showArchived ? 'archivados' : 'registrados'}.</TableCell></TableRow>
                             )}
                         </TableBody>
                     </Table>
@@ -1210,6 +1296,22 @@ export default function ApartadosPage() {
                     </DialogHeader>
                     <ScrollArea className="max-h-[60vh] -mx-6 px-6">
                         <div className="py-4 space-y-4">
+                           <div className="grid grid-cols-3 gap-2 text-sm rounded-md bg-black/5 p-3">
+                                <div>
+                                    <p className="text-xs text-black/60">Apartado</p>
+                                    <p className="font-semibold">{formatFecha(selectedApartado?.fechaCreacion)}</p>
+                                </div>
+                                <div>
+                                    <p className="text-xs text-black/60">Vence</p>
+                                    <p className="font-semibold">{formatFecha(selectedApartado?.fechaVencimiento)}</p>
+                                </div>
+                                <div>
+                                    <p className="text-xs text-black/60">Entrega</p>
+                                    <p className={`font-semibold ${selectedApartado?.entregado ? 'text-green-700' : ''}`}>
+                                        {selectedApartado?.entregado ? formatFecha(selectedApartado?.fechaEntrega) : 'Pendiente'}
+                                    </p>
+                                </div>
+                           </div>
                            <div>
                                 <h4 className="font-semibold mb-2">Artículos del Apartado</h4>
                                 {apartadoItems.length > 0 ? (
@@ -1233,7 +1335,20 @@ export default function ApartadosPage() {
                                         <div key={pago.id} className="flex justify-between items-center text-sm p-2 rounded-md hover:bg-black/5">
                                             <div>
                                                 <p className="font-semibold">{format(pago.fecha.toDate(), "dd/MM/yyyy HH:mm")}</p>
-                                                <p className="text-xs text-black/60">{pago.metodoPago}</p>
+                                                <p className="text-xs text-black/60">{pago.metodoPago === 'TRANSFERENCIA' ? 'Transferencia' : 'Efectivo'}</p>
+                                                {pago.comprobanteUrl && (
+                                                    <a
+                                                        href={pago.comprobanteUrl}
+                                                        target="_blank"
+                                                        rel="noopener noreferrer"
+                                                        className="mt-1 inline-flex items-center gap-1 text-xs font-semibold text-blue-700 underline"
+                                                    >
+                                                        <ExternalLink className="h-3 w-3" /> Ver comprobante
+                                                    </a>
+                                                )}
+                                                {pago.metodoPago === 'TRANSFERENCIA' && !pago.comprobanteUrl && (
+                                                    <p className="text-xs text-black/50">Sin comprobante</p>
+                                                )}
                                             </div>
                                             <div className="font-bold">
                                                 ${pago.monto.toFixed(2)}
@@ -1309,6 +1424,44 @@ export default function ApartadosPage() {
                         <Button variant="outline" onClick={() => setIsPaymentDialogOpen(false)} disabled={isActionLoading}>Cancelar</Button>
                         <Button onClick={handleConfirmPayment} variant="destructive" className="text-black" disabled={isActionLoading}>
                             {isActionLoading ? 'Procesando...' : 'Confirmar Pago'}
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
+
+            <Dialog open={!!apartadoAEntregar} onOpenChange={(open) => { if (!open) setApartadoAEntregar(null); }}>
+                <DialogContent className="sm:max-w-md font-sans" style={{ backgroundColor: 'hsla(39, 44%, 84%, 0.9)', backdropFilter: 'blur(12px)' }}>
+                    <DialogHeader>
+                        <DialogTitle>Marcar como entregado</DialogTitle>
+                        <DialogDescription>
+                            Apartado de <span className="font-semibold">{apartadoAEntregar?.clienteNombre}</span>, apartado el {formatFecha(apartadoAEntregar?.fechaCreacion)}.
+                        </DialogDescription>
+                    </DialogHeader>
+                    <div className="space-y-4 py-2">
+                        {apartadoAEntregar && (apartadoAEntregar.totalApartado || 0) - (apartadoAEntregar.totalPagado || 0) > 0.009 && (
+                            <Alert variant="destructive">
+                                <AlertTitle>Todavía tiene saldo pendiente</AlertTitle>
+                                <AlertDescription>
+                                    Debe ${((apartadoAEntregar.totalApartado || 0) - (apartadoAEntregar.totalPagado || 0)).toFixed(2)}. Puedes marcarlo como entregado de todos modos.
+                                </AlertDescription>
+                            </Alert>
+                        )}
+                        <div className="space-y-2">
+                            <Label htmlFor="fecha-entrega">Fecha de entrega</Label>
+                            <Input
+                                id="fecha-entrega"
+                                type="date"
+                                value={fechaEntregaInput}
+                                onChange={(e) => setFechaEntregaInput(e.target.value)}
+                                className="bg-white/80"
+                                disabled={isActionLoading}
+                            />
+                        </div>
+                    </div>
+                    <DialogFooter>
+                        <Button variant="outline" onClick={() => setApartadoAEntregar(null)} disabled={isActionLoading}>Cancelar</Button>
+                        <Button variant="destructive" className="text-black" onClick={handleConfirmEntrega} disabled={isActionLoading || !fechaEntregaInput}>
+                            {isActionLoading ? 'Guardando...' : 'Sí, ya se entregó'}
                         </Button>
                     </DialogFooter>
                 </DialogContent>

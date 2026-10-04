@@ -2,7 +2,7 @@
 
 import { useState, useMemo, useEffect, useCallback } from 'react';
 import Link from 'next/link';
-import { repartirPagoVenta, etiquetaMetodoPago } from '@/lib/pagos';
+import { repartirPagoVenta, repartirPagoGasto, etiquetaMetodoPago } from '@/lib/pagos';
 import { useFirestore, useCollection, useMemoFirebase, useUser, useStorage, usePaginatedCollection } from '@/firebase';
 import { collection, collectionGroup, query, orderBy, doc, getDocs, runTransaction, getDoc, where, Timestamp, limit, startAfter, type QueryDocumentSnapshot, type DocumentData } from 'firebase/firestore';
 import { ref as storageRef, deleteObject } from 'firebase/storage';
@@ -57,7 +57,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { ArrowLeft, MoreHorizontal, Eye, Trash2, DollarSign, Calendar as CalendarIcon, Download, Link as LinkIcon, TrendingDown, Banknote, Landmark, User } from 'lucide-react';
-import { format, startOfDay, endOfDay } from 'date-fns';
+import { format, startOfDay, endOfDay, startOfWeek, isSameDay } from 'date-fns';
 import { es } from 'date-fns/locale';
 import { useToast } from '@/hooks/use-toast';
 import { Calendar } from "@/components/ui/calendar";
@@ -103,7 +103,9 @@ type Gasto = {
   descripcion: string;
   monto: number;
   fecha: Timestamp;
-  metodoPago: "EFECTIVO" | "TRANSFERENCIA";
+  metodoPago: "EFECTIVO" | "TRANSFERENCIA" | "MIXTO";
+  montoEfectivo?: number;       // Solo en gastos MIXTO
+  montoTransferencia?: number;  // Solo en gastos MIXTO
 };
 
 type Pago = {
@@ -195,6 +197,80 @@ export default function SalesHistoryPage() {
   }, [firestore, user, dateRange]);
   const { data: pagos, isLoading: isLoadingPagos } = useCollection<Pago>(pagosQuery, { enabled: !!user });
 
+  // Totales del día: TODAS las ventas del día (la tabla de abajo las carga por lotes de 50,
+  // así que no sirve para sumar).
+  const ventasDelDiaQuery = useMemoFirebase(() => {
+    if (!firestore || !user || !dateRange.start || !dateRange.end) return null;
+    return query(
+      collection(firestore, 'ventas'),
+      where('fecha', '>=', dateRange.start),
+      where('fecha', '<=', dateRange.end),
+      orderBy('fecha', 'desc')
+    );
+  }, [firestore, user, dateRange]);
+  const { data: ventasDelDia, isLoading: isLoadingVentasDelDia } = useCollection<Venta>(ventasDelDiaQuery, { enabled: !!user });
+
+  // --- Lo que viene de días anteriores ---
+  // La caja arrastra lo que sobró desde el lunes de esa semana hasta el día anterior
+  // (los gastos pueden usar el dinero acumulado de la semana, así que el balance del día
+  // se calcula sobre ese acumulado y no queda en negativo). El lunes empieza en $0.
+  const rangoAnterior = useMemo(() => {
+    if (!selectedDate || !dateRange.start) return null;
+    const inicioSemana = startOfWeek(selectedDate, { weekStartsOn: 1 });
+    if (isSameDay(inicioSemana, selectedDate)) return null; // lunes: no hay días anteriores
+    return { start: inicioSemana, end: dateRange.start };
+  }, [selectedDate, dateRange.start]);
+
+  const prevVentasQuery = useMemoFirebase(() => {
+    if (!firestore || !user || !rangoAnterior) return null;
+    return query(
+      collection(firestore, 'ventas'),
+      where('fecha', '>=', rangoAnterior.start),
+      where('fecha', '<', rangoAnterior.end),
+      orderBy('fecha', 'desc')
+    );
+  }, [firestore, user, rangoAnterior]);
+  const prevPagosQuery = useMemoFirebase(() => {
+    if (!firestore || !user || !rangoAnterior) return null;
+    return query(
+      collectionGroup(firestore, 'pagos'),
+      where('fecha', '>=', rangoAnterior.start),
+      where('fecha', '<', rangoAnterior.end),
+      orderBy('fecha', 'desc')
+    );
+  }, [firestore, user, rangoAnterior]);
+  const prevGastosQuery = useMemoFirebase(() => {
+    if (!firestore || !user || !rangoAnterior) return null;
+    return query(
+      collection(firestore, 'gastos'),
+      where('fecha', '>=', rangoAnterior.start),
+      where('fecha', '<', rangoAnterior.end),
+      orderBy('fecha', 'desc')
+    );
+  }, [firestore, user, rangoAnterior]);
+  const { data: prevVentas, isLoading: isLoadingPrevVentas } = useCollection<Venta>(prevVentasQuery, { enabled: !!user });
+  const { data: prevPagos, isLoading: isLoadingPrevPagos } = useCollection<Pago>(prevPagosQuery, { enabled: !!user });
+  const { data: prevGastos, isLoading: isLoadingPrevGastos } = useCollection<Gasto>(prevGastosQuery, { enabled: !!user });
+
+  const saldoAnterior = useMemo(() => {
+    const saldo = { efectivo: 0, transferencia: 0 };
+    prevVentas?.forEach(v => {
+      const r = repartirPagoVenta(v);
+      saldo.efectivo += r.efectivo;
+      saldo.transferencia += r.transferencia;
+    });
+    prevPagos?.forEach(p => {
+      if (p.metodoPago === 'EFECTIVO') saldo.efectivo += p.monto;
+      else saldo.transferencia += p.monto;
+    });
+    prevGastos?.forEach(g => {
+      const r = repartirPagoGasto(g);
+      saldo.efectivo -= r.efectivo;
+      saldo.transferencia -= r.transferencia;
+    });
+    return saldo;
+  }, [prevVentas, prevPagos, prevGastos]);
+
   const salesSummary = useMemo(() => {
     const summary = {
         ingresosEfectivo: 0,
@@ -202,11 +278,13 @@ export default function SalesHistoryPage() {
         gastosEfectivo: 0,
         gastosTransferencia: 0,
         totalIngresosApartados: 0,
+        saldoAnteriorEfectivo: saldoAnterior.efectivo,
+        saldoAnteriorTransferencia: saldoAnterior.transferencia,
         balanceEfectivo: 0,
         balanceTransferencia: 0,
     };
-    
-    ventas?.forEach(venta => {
+
+    ventasDelDia?.forEach(venta => {
       // Una venta mixta suma su parte de efectivo y su parte de transferencia por separado.
       const { efectivo, transferencia } = repartirPagoVenta(venta);
       summary.ingresosEfectivo += efectivo;
@@ -223,18 +301,30 @@ export default function SalesHistoryPage() {
     });
 
     gastos?.forEach(gasto => {
-        if (gasto.metodoPago === 'EFECTIVO') {
-            summary.gastosEfectivo += gasto.monto;
-        } else if (gasto.metodoPago === 'TRANSFERENCIA') {
-            summary.gastosTransferencia += gasto.monto;
-        }
+        // Un gasto mixto descuenta su parte de efectivo y su parte de transferencias por separado.
+        const { efectivo, transferencia } = repartirPagoGasto(gasto);
+        summary.gastosEfectivo += efectivo;
+        summary.gastosTransferencia += transferencia;
     });
 
-    summary.balanceEfectivo = summary.ingresosEfectivo - summary.gastosEfectivo;
-    summary.balanceTransferencia = summary.ingresosTransferencia - summary.gastosTransferencia;
+    // Acumulado de la semana: lo que hay para volver a invertir.
+    summary.balanceEfectivo = summary.saldoAnteriorEfectivo + summary.ingresosEfectivo - summary.gastosEfectivo;
+    summary.balanceTransferencia = summary.saldoAnteriorTransferencia + summary.ingresosTransferencia - summary.gastosTransferencia;
 
-    return summary;
-  }, [ventas, gastos, pagos]);
+    // Caja del día: lo que debe haber de las ventas de HOY ya descontados los gastos de hoy.
+    // Si un gasto fue mayor que lo vendido hoy, la diferencia salió del acumulado: el día
+    // queda en $0 y se indica cuánto se tomó del acumulado (en vez de un número negativo).
+    const netoEfectivo = summary.ingresosEfectivo - summary.gastosEfectivo;
+    const netoTransferencia = summary.ingresosTransferencia - summary.gastosTransferencia;
+
+    return {
+        ...summary,
+        cajaDiaEfectivo: Math.max(0, netoEfectivo),
+        cajaDiaTransferencia: Math.max(0, netoTransferencia),
+        delAcumuladoEfectivo: Math.max(0, -netoEfectivo),
+        delAcumuladoTransferencia: Math.max(0, -netoTransferencia),
+    };
+  }, [ventasDelDia, gastos, pagos, saldoAnterior]);
 
 
   const getMetodoPagoLabel = etiquetaMetodoPago;
@@ -379,7 +469,7 @@ const handleDeleteSale = async (ventaId: string) => {
     
     // --- START: Fetch all items for the day's sales ---
     const allItemsMap = new Map<string, VentaItem[]>();
-    const itemPromises = ventas.map(async (venta) => {
+    const itemPromises = (ventasDelDia || []).map(async (venta) => {
         const itemsRef = collection(firestore, 'ventas', venta.id, 'items');
         const itemsSnapshot = await getDocs(itemsRef);
         const items = itemsSnapshot.docs.map(doc => doc.data() as VentaItem);
@@ -398,9 +488,11 @@ const handleDeleteSale = async (ventaId: string) => {
     doc.text(`Cierre gestionado por: ${user?.displayName || user?.email || 'N/A'}`, 14, 32);
 
     // Resumen de ventas
-    const totalVentasDirectas = (ventas || []).reduce((acc, v) => acc + v.totalVenta, 0);
+    const totalVentasDirectas = (ventasDelDia || []).reduce((acc, v) => acc + v.totalVenta, 0);
 
     const summaryBody = [
+        ['Viene de días anteriores (Efectivo)', `$${salesSummary.saldoAnteriorEfectivo.toFixed(2)}`],
+        ['Viene de días anteriores (Transferencia)', `$${salesSummary.saldoAnteriorTransferencia.toFixed(2)}`],
         ['Ventas Directas', `$${totalVentasDirectas.toFixed(2)}`],
         ['Ingresos por Apartados', `$${salesSummary.totalIngresosApartados.toFixed(2)}`],
         ['Total Ingresos (Efectivo)', `$${salesSummary.ingresosEfectivo.toFixed(2)}`],
@@ -413,11 +505,19 @@ const handleDeleteSale = async (ventaId: string) => {
         head: [['Concepto', 'Monto']],
         body: summaryBody,
         foot: [[
-          { content: 'Balance Final (Efectivo)', colSpan: 1, styles: { fontStyle: 'bold', halign: 'right' } },
+          { content: 'Debe haber en caja hoy (Efectivo)', colSpan: 1, styles: { fontStyle: 'bold', halign: 'right' } },
+          { content: `$${salesSummary.cajaDiaEfectivo.toFixed(2)}` + (salesSummary.delAcumuladoEfectivo > 0.009 ? ` (se usaron $${salesSummary.delAcumuladoEfectivo.toFixed(2)} del acumulado)` : ''), styles: { fontStyle: 'bold' } },
+        ],
+        [
+          { content: 'Debe haber hoy (Transferencia)', colSpan: 1, styles: { fontStyle: 'bold', halign: 'right' } },
+          { content: `$${salesSummary.cajaDiaTransferencia.toFixed(2)}` + (salesSummary.delAcumuladoTransferencia > 0.009 ? ` (se usaron $${salesSummary.delAcumuladoTransferencia.toFixed(2)} del acumulado)` : ''), styles: { fontStyle: 'bold' } },
+        ],
+        [
+          { content: 'Acumulado de la semana (Efectivo)', colSpan: 1, styles: { fontStyle: 'bold', halign: 'right' } },
           { content: `$${salesSummary.balanceEfectivo.toFixed(2)}`, styles: { fontStyle: 'bold' } },
         ],
         [
-          { content: 'Balance Final (Transferencia)', colSpan: 1, styles: { fontStyle: 'bold', halign: 'right' } },
+          { content: 'Acumulado de la semana (Transferencia)', colSpan: 1, styles: { fontStyle: 'bold', halign: 'right' } },
           { content: `$${salesSummary.balanceTransferencia.toFixed(2)}`, styles: { fontStyle: 'bold' } },
         ]
       ],
@@ -462,12 +562,12 @@ const handleDeleteSale = async (ventaId: string) => {
       finalY = (doc as any).lastAutoTable.finalY;
     };
     
-    const ventasEfectivo = (ventas || []).filter(v => v.metodoPago === 'EFECTIVO');
-    const ventasTransferencia = (ventas || []).filter(v => v.metodoPago === 'TRANSFERENCIA');
+    const ventasEfectivo = (ventasDelDia || []).filter(v => v.metodoPago === 'EFECTIVO');
+    const ventasTransferencia = (ventasDelDia || []).filter(v => v.metodoPago === 'TRANSFERENCIA');
 
     drawSalesTable(`Detalle de Ventas en Efectivo (${ventasEfectivo.length})`, ventasEfectivo, [39, 174, 96]);
     drawSalesTable(`Detalle de Ventas por Transferencia (${ventasTransferencia.length})`, ventasTransferencia, [88, 86, 214]);
-    const ventasMixtas = (ventas || []).filter(v => v.metodoPago === 'MIXTO');
+    const ventasMixtas = (ventasDelDia || []).filter(v => v.metodoPago === 'MIXTO');
     drawSalesTable(`Detalle de Ventas con Pago Mixto (${ventasMixtas.length})`, ventasMixtas, [211, 84, 0], true);
      
     // Tabla de transacciones de gastos
@@ -478,7 +578,9 @@ const handleDeleteSale = async (ventaId: string) => {
         const gastosBody = gastos.map(gasto => [
             format((gasto.fecha as Timestamp).toDate(), "HH:mm 'hrs'", { locale: es }),
             gasto.descripcion,
-            gasto.metodoPago,
+            gasto.metodoPago === 'MIXTO'
+                ? `Mixto (Ef. $${repartirPagoGasto(gasto).efectivo.toFixed(2)} + Transf. $${repartirPagoGasto(gasto).transferencia.toFixed(2)})`
+                : etiquetaMetodoPago(gasto.metodoPago),
             `$${gasto.monto.toFixed(2)}`
         ]);
 
@@ -496,7 +598,8 @@ const handleDeleteSale = async (ventaId: string) => {
     toast({ variant: "success", title: "Reporte Generado", description: "El cierre de caja se ha descargado." });
   };
 
-  const isLoading = isLoadingVentas || isLoadingGastos || isLoadingPagos;
+  const isLoading = isLoadingVentas || isLoadingGastos || isLoadingPagos || isLoadingVentasDelDia
+    || isLoadingPrevVentas || isLoadingPrevPagos || isLoadingPrevGastos;
 
   return (
     <div className="space-y-6">
@@ -568,25 +671,41 @@ const handleDeleteSale = async (ventaId: string) => {
         </Card>
         <Card style={{ backgroundColor: 'hsla(40, 50%, 85%, 0.8)' }}>
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                <CardTitle className="text-sm font-medium text-black">Balance Final (Efectivo)</CardTitle>
+                <CardTitle className="text-sm font-medium text-black">Balance del Día (Efectivo)</CardTitle>
                 <Banknote className="h-4 w-4 text-black/70" />
             </CardHeader>
             <CardContent>
-                <div className="text-2xl font-bold text-black">${salesSummary.balanceEfectivo.toFixed(2)}</div>
+                <div className="text-2xl font-bold text-black">${salesSummary.cajaDiaEfectivo.toFixed(2)}</div>
                 <p className="text-xs text-black/80">
-                  Gastos en efectivo: ${salesSummary.gastosEfectivo.toFixed(2)}
+                  Ventas ${salesSummary.ingresosEfectivo.toFixed(2)} − Gastos ${salesSummary.gastosEfectivo.toFixed(2)}
+                </p>
+                {salesSummary.delAcumuladoEfectivo > 0.009 && (
+                  <p className="text-xs font-semibold text-black">
+                    Se usaron ${salesSummary.delAcumuladoEfectivo.toFixed(2)} del acumulado
+                  </p>
+                )}
+                <p className="mt-2 border-t border-black/20 pt-1 text-xs font-semibold text-black">
+                  Acumulado de la semana: ${salesSummary.balanceEfectivo.toFixed(2)}
                 </p>
             </CardContent>
         </Card>
         <Card style={{ backgroundColor: 'hsla(300, 40%, 85%, 0.8)' }}>
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                <CardTitle className="text-sm font-medium text-black">Balance Final (Transferencia)</CardTitle>
+                <CardTitle className="text-sm font-medium text-black">Balance del Día (Transferencia)</CardTitle>
                 <DollarSign className="h-4 w-4 text-black/70" />
             </CardHeader>
             <CardContent>
-                <div className="text-2xl font-bold text-black">${salesSummary.balanceTransferencia.toFixed(2)}</div>
+                <div className="text-2xl font-bold text-black">${salesSummary.cajaDiaTransferencia.toFixed(2)}</div>
                 <p className="text-xs text-black/80">
-                  Gastos por transf.: ${salesSummary.gastosTransferencia.toFixed(2)}
+                  Ventas ${salesSummary.ingresosTransferencia.toFixed(2)} − Gastos ${salesSummary.gastosTransferencia.toFixed(2)}
+                </p>
+                {salesSummary.delAcumuladoTransferencia > 0.009 && (
+                  <p className="text-xs font-semibold text-black">
+                    Se usaron ${salesSummary.delAcumuladoTransferencia.toFixed(2)} del acumulado
+                  </p>
+                )}
+                <p className="mt-2 border-t border-black/20 pt-1 text-xs font-semibold text-black">
+                  Acumulado de la semana: ${salesSummary.balanceTransferencia.toFixed(2)}
                 </p>
             </CardContent>
         </Card>

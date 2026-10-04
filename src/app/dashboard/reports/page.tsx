@@ -2,7 +2,7 @@
 "use client"
 
 import { useState, useMemo, useEffect } from "react"
-import { repartirPagoVenta } from "@/lib/pagos";
+import { repartirPagoVenta, repartirPagoGasto } from "@/lib/pagos";
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, XAxis, YAxis, Tooltip, Legend } from "recharts"
 import jsPDF from 'jspdf';
 import 'jspdf-autotable';
@@ -46,7 +46,9 @@ type Gasto = {
   descripcion: string;
   monto: number;
   fecha: Timestamp | Date;
-  metodoPago: "EFECTIVO" | "TRANSFERENCIA";
+  metodoPago: "EFECTIVO" | "TRANSFERENCIA" | "MIXTO";
+  montoEfectivo?: number;       // Solo en gastos MIXTO
+  montoTransferencia?: number;  // Solo en gastos MIXTO
 };
 
 type Pago = {
@@ -211,13 +213,12 @@ export default function ReportsPage() {
         const dayName = format(gastoDate, 'EEEE', { locale: es });
         const current = dailyData.get(dayName);
          if (current) {
-             if (gasto.metodoPago === 'EFECTIVO') {
-                current.gastosEfectivo += gasto.monto;
-                summary.gastosEfectivo += gasto.monto;
-            } else {
-                current.gastosTransferencia += gasto.monto;
-                summary.gastosTransferencia += gasto.monto;
-            }
+            // Un gasto mixto descuenta su parte de efectivo y su parte de transferencias por separado.
+            const { efectivo, transferencia } = repartirPagoGasto(gasto);
+            current.gastosEfectivo += efectivo;
+            current.gastosTransferencia += transferencia;
+            summary.gastosEfectivo += efectivo;
+            summary.gastosTransferencia += transferencia;
         }
     });
     

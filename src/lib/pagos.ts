@@ -32,6 +32,27 @@ export function repartirPagoVenta(venta: VentaConPago): { efectivo: number; tran
   }
 }
 
+export type GastoConPago = {
+  monto: number;
+  metodoPago: string;
+  montoEfectivo?: number;
+  montoTransferencia?: number;
+};
+
+/**
+ * Cuánto de un gasto salió del efectivo y cuánto de las transferencias.
+ * Un gasto MIXTO (ej. comprar una paca con $2,000 de transferencias y $1,000 en
+ * efectivo) descuenta cada parte de su propio dinero.
+ */
+export function repartirPagoGasto(gasto: GastoConPago): { efectivo: number; transferencia: number } {
+  return repartirPagoVenta({
+    totalVenta: gasto.monto,
+    metodoPago: gasto.metodoPago,
+    montoEfectivo: gasto.montoEfectivo,
+    montoTransferencia: gasto.montoTransferencia,
+  });
+}
+
 export function etiquetaMetodoPago(metodo: string): string {
   switch (metodo) {
     case 'EFECTIVO': return 'Efectivo';

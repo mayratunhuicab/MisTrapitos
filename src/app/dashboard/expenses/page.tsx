@@ -58,25 +58,33 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Calendar } from "@/components/ui/calendar";
 import { Badge } from "@/components/ui/badge";
 import { useFirestore, useCollection, useUser, useMemoFirebase, usePaginatedCollection } from "@/firebase";
-import { collection, collectionGroup, query, addDoc, doc, updateDoc, deleteDoc, Timestamp, orderBy, where } from "firebase/firestore";
+import { collection, collectionGroup, query, addDoc, doc, updateDoc, deleteDoc, Timestamp, orderBy, where, deleteField, getDocs } from "firebase/firestore";
 import { format, startOfWeek, endOfWeek, addDays, subDays, startOfDay, endOfDay, isWithinInterval, isSameDay } from "date-fns";
 import { es } from "date-fns/locale";
 import { PlusCircle, Calendar as CalendarIcon, MoreHorizontal, Pencil, Trash2, ChevronLeft, ChevronRight, LocateFixed } from "lucide-react";
 import { useToast } from '@/hooks/use-toast';
 import { cn } from "@/lib/utils";
+import { repartirPagoVenta, repartirPagoGasto, redondearCentavos } from "@/lib/pagos";
 
 type Gasto = {
   id: string;
   descripcion: string;
   monto: number;
   fecha: Timestamp | Date;
-  metodoPago: "EFECTIVO" | "TRANSFERENCIA";
+  metodoPago: MetodoGasto;
+  montoEfectivo?: number;       // Solo en gastos MIXTO
+  montoTransferencia?: number;  // Solo en gastos MIXTO
 };
+
+// MIXTO = una parte del gasto se pagó con efectivo y otra con dinero de transferencias.
+type MetodoGasto = "EFECTIVO" | "TRANSFERENCIA" | "MIXTO";
 
 type Venta = {
   id: string;
   totalVenta: number;
-  metodoPago: "EFECTIVO" | "TRANSFERENCIA";
+  metodoPago: "EFECTIVO" | "TRANSFERENCIA" | "MIXTO";
+  montoEfectivo?: number;
+  montoTransferencia?: number;
   fecha: Timestamp;
 };
 
@@ -140,7 +148,10 @@ export default function ExpensesPage() {
     const [descripcionGasto, setDescripcionGasto] = useState("");
     const [montoGasto, setMontoGasto] = useState<number | "">("");
     const [fechaGasto, setFechaGasto] = useState<Date | undefined>(new Date());
-    const [metodoPagoGasto, setMetodoPagoGasto] = useState<"EFECTIVO" | "TRANSFERENCIA">("EFECTIVO");
+    const [metodoPagoGasto, setMetodoPagoGasto] = useState<MetodoGasto>("EFECTIVO");
+    // Gasto MIXTO: cuánto sale de cada dinero; el monto total es la suma.
+    const [mixtoEfectivo, setMixtoEfectivo] = useState<number | "">("");
+    const [mixtoTransferencia, setMixtoTransferencia] = useState<number | "">("");
     const [isSubmitting, setIsSubmitting] = useState(false);
     // Lista en tiempo real, cargada por lotes: los cambios aparecen sin recargar.
     const gastosListQuery = useMemoFirebase(() => {
@@ -204,6 +215,8 @@ export default function ExpensesPage() {
         setMontoGasto("");
         setFechaGasto(new Date());
         setMetodoPagoGasto("EFECTIVO");
+        setMixtoEfectivo("");
+        setMixtoTransferencia("");
     }
 
     const handleOpenDialog = (gasto: Gasto | null = null) => {
@@ -213,6 +226,8 @@ export default function ExpensesPage() {
             setMontoGasto(gasto.monto);
             setFechaGasto((gasto.fecha as Timestamp).toDate());
             setMetodoPagoGasto(gasto.metodoPago || "EFECTIVO");
+            setMixtoEfectivo(gasto.metodoPago === 'MIXTO' ? (gasto.montoEfectivo ?? '') : '');
+            setMixtoTransferencia(gasto.metodoPago === 'MIXTO' ? (gasto.montoTransferencia ?? '') : '');
         } else {
             resetForm();
         }
@@ -221,43 +236,87 @@ export default function ExpensesPage() {
 
     const handleSaveChanges = async () => {
         if (!firestore) return;
-        const monto = Number(montoGasto);
+        const esMixto = metodoPagoGasto === 'MIXTO';
+        const parteEfectivo = esMixto ? (Number(mixtoEfectivo) || 0) : 0;
+        const parteTransferencia = esMixto ? (Number(mixtoTransferencia) || 0) : 0;
+        const monto = esMixto ? redondearCentavos(parteEfectivo + parteTransferencia) : Number(montoGasto);
         if (!descripcionGasto || monto <= 0 || !fechaGasto || !metodoPagoGasto) {
             toast({ variant: "destructive", title: "Error", description: "Completa todos los campos del gasto." });
             return;
         }
+        if (esMixto && (parteEfectivo <= 0 || parteTransferencia <= 0)) {
+            toast({ variant: "destructive", title: "Montos incompletos", description: "En un gasto mixto escribe cuánto sale de efectivo y cuánto de transferencias. Si todo sale de uno solo, elige ese método." });
+            return;
+        }
 
         // --- VALIDATION LOGIC ---
-        const dayOfNewExpense = fechaGasto;
+        // El dinero disponible es lo ACUMULADO de la semana: todo lo que entró desde el
+        // lunes de esa semana hasta el día del gasto, menos lo que ya se gastó en esos
+        // días (así se puede usar lo juntado en la semana para comprar otra paca).
+        // Se consulta en este momento, porque la pantalla solo tiene cargado el rango
+        // visible y los gastos por lotes. Cada parte del gasto se compara contra su
+        // propio dinero; ventas y gastos mixtos aportan/descuentan su parte a cada uno.
+        const inicioSemana = startOfWeek(fechaGasto, { weekStartsOn: 1 });
+        const finDelDia = endOfDay(fechaGasto);
+        const enRango = (col: ReturnType<typeof collection> | ReturnType<typeof collectionGroup>) => query(
+            col,
+            where('fecha', '>=', Timestamp.fromDate(inicioSemana)),
+            where('fecha', '<=', Timestamp.fromDate(finDelDia)),
+            orderBy('fecha', 'desc')
+        );
 
-        // Income from direct sales
-        const totalSalesForDay = (ventas || [])
-            .filter(v => isSameDay(v.fecha.toDate(), dayOfNewExpense) && v.metodoPago === metodoPagoGasto)
-            .reduce((sum, v) => sum + v.totalVenta, 0);
+        const disponibleDelDia = { efectivo: 0, transferencia: 0 };
+        try {
+            const [ventasSnap, pagosSnap, gastosSnap] = await Promise.all([
+                getDocs(enRango(collection(firestore, 'ventas'))),
+                getDocs(enRango(collectionGroup(firestore, 'pagos'))),
+                getDocs(enRango(collection(firestore, 'gastos'))),
+            ]);
 
-        // Income from layaway payments
-        const totalPagosForDay = (pagos || [])
-            .filter(p => isSameDay(p.fecha.toDate(), dayOfNewExpense) && p.metodoPago === metodoPagoGasto)
-            .reduce((sum, p) => sum + p.monto, 0);
-        
-        const totalIncomeForDay = totalSalesForDay + totalPagosForDay;
+            ventasSnap.docs.forEach(d => {
+                const r = repartirPagoVenta(d.data() as Venta);
+                disponibleDelDia.efectivo += r.efectivo;
+                disponibleDelDia.transferencia += r.transferencia;
+            });
 
-        const totalExpensesForDay = (gastos || [])
-            .filter(g => 
-                isSameDay((g.fecha as Timestamp).toDate(), dayOfNewExpense) && 
-                g.metodoPago === metodoPagoGasto &&
-                g.id !== selectedGasto?.id // Exclude the current expense if editing
-            )
-            .reduce((sum, g) => sum + g.monto, 0);
-        
-        const availableBalance = totalIncomeForDay - totalExpensesForDay;
+            pagosSnap.docs.forEach(d => {
+                const p = d.data() as Pago;
+                if (p.metodoPago === 'EFECTIVO') disponibleDelDia.efectivo += p.monto;
+                else disponibleDelDia.transferencia += p.monto;
+            });
 
-        if (monto > availableBalance) {
+            gastosSnap.docs
+                .filter(d => d.id !== selectedGasto?.id) // Exclude the current expense if editing
+                .forEach(d => {
+                    const r = repartirPagoGasto(d.data() as Gasto);
+                    disponibleDelDia.efectivo -= r.efectivo;
+                    disponibleDelDia.transferencia -= r.transferencia;
+                });
+        } catch (error) {
+            console.error("Error checking available balance:", error);
+            toast({ variant: "destructive", title: "Error", description: "No se pudo revisar el dinero disponible de la semana. Inténtalo de nuevo." });
+            return;
+        }
+        const periodo = isSameDay(inicioSemana, fechaGasto)
+            ? `el ${format(fechaGasto, "dd/MM")}`
+            : `la semana (del ${format(inicioSemana, "dd/MM")} al ${format(fechaGasto, "dd/MM")})`;
+
+        const usaEfectivo = esMixto ? parteEfectivo : (metodoPagoGasto === 'EFECTIVO' ? monto : 0);
+        const usaTransferencia = esMixto ? parteTransferencia : (metodoPagoGasto === 'TRANSFERENCIA' ? monto : 0);
+
+        const excedidos: string[] = [];
+        if (usaEfectivo > disponibleDelDia.efectivo + 0.001) {
+            excedidos.push(`efectivo: ${formatCurrency(usaEfectivo)} de ${formatCurrency(disponibleDelDia.efectivo)} disponibles`);
+        }
+        if (usaTransferencia > disponibleDelDia.transferencia + 0.001) {
+            excedidos.push(`transferencias: ${formatCurrency(usaTransferencia)} de ${formatCurrency(disponibleDelDia.transferencia)} disponibles`);
+        }
+        if (excedidos.length > 0) {
             toast({
                 variant: "destructive",
                 title: "Límite de Gastos Excedido",
-                description: `El monto del gasto (${formatCurrency(monto)}) supera el balance disponible en ${metodoPagoGasto} (${formatCurrency(availableBalance)}) para este día.`,
-                duration: 5000,
+                description: `El gasto supera el dinero acumulado en ${periodo} en ${excedidos.join(' y en ')}.`,
+                duration: 6000,
             });
             return;
         }
@@ -270,6 +329,10 @@ export default function ExpensesPage() {
             monto: monto,
             fecha: fechaGasto,
             metodoPago: metodoPagoGasto,
+            // En un gasto mixto se guarda cuánto salió de cada dinero; si deja de ser
+            // mixto al editarlo, esos campos se borran.
+            montoEfectivo: esMixto ? redondearCentavos(parteEfectivo) : deleteField(),
+            montoTransferencia: esMixto ? redondearCentavos(parteTransferencia) : deleteField(),
         };
 
         try {
@@ -278,7 +341,8 @@ export default function ExpensesPage() {
                 await updateDoc(gastoRef, gastoData);
                 toast({ variant: "success", title: "Gasto actualizado" });
             } else {
-                await addDoc(collection(firestore, 'gastos'), gastoData);
+                const { montoEfectivo, montoTransferencia, ...base } = gastoData;
+                await addDoc(collection(firestore, 'gastos'), esMixto ? { ...base, montoEfectivo, montoTransferencia } : base);
                 toast({ variant: "success", title: "Gasto agregado" });
             }
             setIsDialogOpen(false);
@@ -388,20 +452,39 @@ export default function ExpensesPage() {
                                 </div>
                                 <div className="space-y-2">
                                     <Label htmlFor="metodo-pago-gasto" className="font-sans font-semibold text-md text-black mb-1">Método de Pago</Label>
-                                    <Select value={metodoPagoGasto} onValueChange={(value: "EFECTIVO" | "TRANSFERENCIA") => setMetodoPagoGasto(value)} disabled={isSubmitting}>
+                                    <Select value={metodoPagoGasto} onValueChange={(value: MetodoGasto) => setMetodoPagoGasto(value)} disabled={isSubmitting}>
                                         <SelectTrigger id="metodo-pago-gasto" className="font-sans bg-white/80">
                                             <SelectValue placeholder="Selecciona método" />
                                         </SelectTrigger>
                                         <SelectContent className="font-sans">
                                             <SelectItem value="EFECTIVO">Efectivo</SelectItem>
                                             <SelectItem value="TRANSFERENCIA">Transferencia</SelectItem>
+                                            <SelectItem value="MIXTO">Mixto (efectivo + transferencia)</SelectItem>
                                         </SelectContent>
                                     </Select>
                                 </div>
-                                <div className="space-y-2">
-                                    <Label htmlFor="monto" className="font-semibold">Monto ($)</Label>
-                                    <Input id="monto" type="number" min="0" value={montoGasto} onChange={(e) => setMontoGasto(e.target.value === '' ? '' : Number(e.target.value))} disabled={isSubmitting} />
-                                </div>
+                                {metodoPagoGasto === 'MIXTO' ? (
+                                    <div className="space-y-2">
+                                        <div className="grid grid-cols-2 gap-3">
+                                            <div className="space-y-2">
+                                                <Label htmlFor="monto-efectivo" className="font-semibold">De efectivo ($)</Label>
+                                                <Input id="monto-efectivo" type="number" min="0" step="0.01" placeholder="Ej: 1000" value={mixtoEfectivo} onChange={(e) => setMixtoEfectivo(e.target.value === '' ? '' : Number(e.target.value))} disabled={isSubmitting} />
+                                            </div>
+                                            <div className="space-y-2">
+                                                <Label htmlFor="monto-transferencia" className="font-semibold">De transferencias ($)</Label>
+                                                <Input id="monto-transferencia" type="number" min="0" step="0.01" placeholder="Ej: 2000" value={mixtoTransferencia} onChange={(e) => setMixtoTransferencia(e.target.value === '' ? '' : Number(e.target.value))} disabled={isSubmitting} />
+                                            </div>
+                                        </div>
+                                        <p className="text-sm font-semibold">
+                                            Total del gasto: {formatCurrency((Number(mixtoEfectivo) || 0) + (Number(mixtoTransferencia) || 0))}
+                                        </p>
+                                    </div>
+                                ) : (
+                                    <div className="space-y-2">
+                                        <Label htmlFor="monto" className="font-semibold">Monto ($)</Label>
+                                        <Input id="monto" type="number" min="0" value={montoGasto} onChange={(e) => setMontoGasto(e.target.value === '' ? '' : Number(e.target.value))} disabled={isSubmitting} />
+                                    </div>
+                                )}
                                 <div className="space-y-2">
                                     <Label htmlFor="fecha" className="font-semibold">Fecha del Gasto</Label>
                                     <Popover>
@@ -476,6 +559,12 @@ export default function ExpensesPage() {
                                             <Badge variant={gasto.metodoPago === 'EFECTIVO' ? 'secondary' : 'outline'}>
                                                 {gasto.metodoPago}
                                             </Badge>
+                                            {gasto.metodoPago === 'MIXTO' && (
+                                                <p className="mt-1 text-[11px] leading-tight text-black/70">
+                                                    Efectivo {formatCurrency(repartirPagoGasto(gasto).efectivo)}<br />
+                                                    Transf. {formatCurrency(repartirPagoGasto(gasto).transferencia)}
+                                                </p>
+                                            )}
                                         </TableCell>
                                         <TableCell className="text-right font-bold">{formatCurrency(gasto.monto)}</TableCell>
                                         <TableCell className="text-right">

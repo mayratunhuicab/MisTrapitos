@@ -39,7 +39,8 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Search, X, Trash2, ShoppingCart, DollarSign, Upload, Camera, Calendar as CalendarIcon, CircleUser, PlusCircle, MoreHorizontal, Eye, FilePlus2, Archive, ArchiveRestore } from 'lucide-react';
 import { useFirestore, useUser, useStorage, useCollection, useMemoFirebase, usePaginatedCollection } from '@/firebase';
-import { collection, query, where, getDocs, runTransaction, doc, addDoc, collectionGroup, orderBy, Timestamp, updateDoc, writeBatch, limit, startAfter, type QueryDocumentSnapshot, type DocumentData } from 'firebase/firestore';
+import { computeCartPricing, type PromoEspecial } from '@/lib/ofertas';
+import { collection, query, where, getDocs, getDoc, runTransaction, doc, addDoc, collectionGroup, orderBy, Timestamp, updateDoc, writeBatch, limit, startAfter, type QueryDocumentSnapshot, type DocumentData } from 'firebase/firestore';
 import { ref as storageRef, uploadString, getDownloadURL } from "firebase/storage";
 import { useToast } from '@/hooks/use-toast';
 import {
@@ -89,104 +90,19 @@ type Prenda = {
   // Si la prenda pertenece a un Grupo de Oferta (configurado en /dashboard/ofertas),
   // su oferta puede combinarse con la de OTRAS pacas que compartan el mismo grupo.
   grupoOfertaId?: string;
+  // Promociones especiales (combos) en las que participa esta prenda, por id.
+  promosEspeciales?: Record<string, PromoEspecial>;
 };
 
 type CartItem = Prenda & {
   cantidadEnCarrito: number | '';
 };
 
-// Por defecto, una oferta ("N por $X") solo se combina entre prendas de la MISMA
-// paca (para que "2 shorts por $100" de la paca A no se mezcle por accidente con
-// "2 pantalones por $100" de la paca B solo porque coinciden los números). Si el
-// admin configuró explícitamente un Grupo de Oferta (colección `gruposOferta`,
-// gestionada en /dashboard/ofertas) para permitir mezclar prendas específicas de
-// distintas pacas, se usa ese grupo como llave en su lugar.
-function getOfferGroupKey(item: Pick<Prenda, 'pacaId' | 'ofertaCantidad' | 'ofertaPrecio' | 'grupoOfertaId'>): string {
-  if (item.grupoOfertaId) {
-    return `grupo:${item.grupoOfertaId}`;
-  }
-  return `paca:${item.pacaId}:${item.ofertaCantidad}-${item.ofertaPrecio}`;
-}
+// Precios con ofertas ("N por $X" y promociones especiales): ver src/lib/ofertas.ts
 
-// --- Lógica de precios con oferta (misma idea que en Ventas) ---
-// Agrupa las unidades del carrito que comparten una oferta ("N por $X"),
-// arma los paquetes completos posibles y les asigna el precio de oferta
-// por unidad; las unidades sobrantes (o sin oferta configurada) usan su
-// precio individual normal.
-type PricedUnit = {
-  key: string; // `${pacaId}-${id}`
-  item: CartItem;
-  effectivePrice: number;
-};
-
-type CartPricing = {
-  pricedUnits: PricedUnit[];
-  rawSubtotal: number;
-  total: number;
-  discount: number;
-  subtotalPorItem: Map<string, number>;
-};
-
-function computeCartPricing(cart: CartItem[]): CartPricing {
-  type UnitRef = { item: CartItem; key: string };
-  const offerGroups = new Map<string, UnitRef[]>();
-  const plainUnits: UnitRef[] = [];
-
-  cart.forEach(item => {
-    const cantidad = Number(item.cantidadEnCarrito) || 0;
-    if (cantidad <= 0) return;
-    const key = `${item.pacaId}-${item.id}`;
-    const hasOferta = !!(item.ofertaCantidad && item.ofertaPrecio);
-    for (let i = 0; i < cantidad; i++) {
-      if (hasOferta) {
-        const groupKey = getOfferGroupKey(item);
-        if (!offerGroups.has(groupKey)) offerGroups.set(groupKey, []);
-        offerGroups.get(groupKey)!.push({ item, key });
-      } else {
-        plainUnits.push({ item, key });
-      }
-    }
-  });
-
-  const pricedUnits: PricedUnit[] = [];
-
-  offerGroups.forEach((units) => {
-    const ofertaCantidad = units[0].item.ofertaCantidad!;
-    const ofertaPrecio = units[0].item.ofertaPrecio!;
-    const sorted = [...units].sort((a, b) => {
-      const priceA = a.item.precioIndividual ?? a.item.precioVenta;
-      const priceB = b.item.precioIndividual ?? b.item.precioVenta;
-      return priceB - priceA;
-    });
-    const numBundles = Math.floor(sorted.length / ofertaCantidad);
-    const bundledCount = numBundles * ofertaCantidad;
-    const bundleUnitPrice = ofertaPrecio / ofertaCantidad;
-    sorted.forEach((unit, idx) => {
-      const effectivePrice = idx < bundledCount
-        ? bundleUnitPrice
-        : (unit.item.precioIndividual ?? unit.item.precioVenta);
-      pricedUnits.push({ key: unit.key, item: unit.item, effectivePrice });
-    });
-  });
-
-  plainUnits.forEach(unit => {
-    pricedUnits.push({
-      key: unit.key,
-      item: unit.item,
-      effectivePrice: unit.item.precioIndividual ?? unit.item.precioVenta,
-    });
-  });
-
-  const rawSubtotal = pricedUnits.reduce((sum, u) => sum + (u.item.precioIndividual ?? u.item.precioVenta), 0);
-  const total = pricedUnits.reduce((sum, u) => sum + u.effectivePrice, 0);
-  const discount = rawSubtotal - total;
-
-  const subtotalPorItem = new Map<string, number>();
-  pricedUnits.forEach(u => {
-    subtotalPorItem.set(u.key, (subtotalPorItem.get(u.key) || 0) + u.effectivePrice);
-  });
-
-  return { pricedUnits, rawSubtotal, total, discount, subtotalPorItem };
+// Minúsculas y sin acentos, para que "sueter" encuentre "Suéter".
+function normalizeText(text: string): string {
+  return (text || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
 }
 
 type Apartado = {
@@ -364,6 +280,10 @@ export default function ApartadosPage() {
     const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
     const [isProcessing, setIsProcessing] = useState(false);
     const [searchId, setSearchId] = useState('');
+    // Búsqueda por nombre: se cargan todas las prendas una vez y se filtran en el navegador.
+    const [allPrendas, setAllPrendas] = useState<(Prenda & { path: string })[] | null>(null);
+    const [nameResults, setNameResults] = useState<(Prenda & { path: string })[] | null>(null);
+    const [isSearching, setIsSearching] = useState(false);
     const [cart, setCart] = useState<CartItem[]>([]);
     const [clienteNombre, setClienteNombre] = useState('');
     const [clienteTelefono, setClienteTelefono] = useState('');
@@ -425,6 +345,8 @@ export default function ApartadosPage() {
     // --- Functions ---
     const resetCreateForm = () => {
         setCart([]);
+        setAllPrendas(null); // el stock pudo cambiar: la próxima búsqueda por nombre recarga la lista
+        setNameResults(null);
         setSearchId('');
         setClienteNombre('');
         setClienteTelefono('');
@@ -451,6 +373,7 @@ export default function ApartadosPage() {
         const trimmedId = searchId.trim().toUpperCase();
         if (!trimmedId) return;
     
+        setIsSearching(true);
         try {
             const prendasRef = collectionGroup(firestore, 'prendas');
             const prendasQuery = query(prendasRef, where('idPersonalizado', '==', trimmedId));
@@ -468,12 +391,68 @@ export default function ApartadosPage() {
                 
                 addToCart(prendaFound);
                 setSearchId('');
+                setNameResults(null);
+                return;
+            }
+
+            // No hay un ID exacto: buscar por nombre (tipo de prenda, género, talla o parte del ID).
+            let prendas = allPrendas;
+            if (!prendas) {
+                const allSnapshot = await getDocs(prendasRef);
+                prendas = allSnapshot.docs.map(d => ({
+                    id: d.id,
+                    ...(d.data() as Omit<Prenda, 'id' | 'pacaId'>),
+                    pacaId: d.ref.parent.parent!.id,
+                    path: d.ref.path,
+                }));
+                setAllPrendas(prendas);
+            }
+
+            const words = normalizeText(searchId).split(/\s+/).filter(Boolean);
+            const matches = prendas
+                .filter(p => p.cantidad > 0)
+                .filter(p => {
+                    const haystack = normalizeText(`${p.tipoPrenda} ${p.genero} talla ${p.talla} ${p.idPersonalizado}`);
+                    return words.every(w => haystack.includes(w));
+                })
+                .slice(0, 30);
+
+            if (matches.length === 0) {
+                setNameResults(null);
+                toast({ variant: "destructive", title: "Prenda no encontrada", description: `No se encontró ninguna prenda con el ID o nombre "${searchId.trim()}".` });
             } else {
-                toast({ variant: "destructive", title: "Prenda no encontrada" });
+                setNameResults(matches);
             }
         } catch (error) {
             console.error("Error searching for prenda: ", error);
             toast({ variant: "destructive", title: "Error de búsqueda" });
+        } finally {
+            setIsSearching(false);
+        }
+    };
+
+    // Al elegir un resultado de la búsqueda por nombre se vuelve a leer la prenda,
+    // para agregarla con su stock actual (la lista puede estar desactualizada).
+    const handlePickResult = async (result: Prenda & { path: string }) => {
+        if (!firestore) return;
+        try {
+            const snap = await getDoc(doc(firestore, result.path));
+            if (!snap.exists()) {
+                toast({ variant: "destructive", title: "Prenda no encontrada", description: "Esta prenda ya no existe en el inventario." });
+                return;
+            }
+            const fresh: Prenda = {
+                id: snap.id,
+                ...(snap.data() as Omit<Prenda, 'id' | 'pacaId'>),
+                pacaId: snap.ref.parent.parent!.id,
+            };
+            addToCart(fresh);
+            setNameResults(null);
+            setSearchId('');
+            searchInputRef.current?.focus();
+        } catch (error) {
+            console.error("Error loading prenda: ", error);
+            toast({ variant: "destructive", title: "Error", description: "No se pudo agregar la prenda." });
         }
     };
 
@@ -937,9 +916,41 @@ export default function ApartadosPage() {
                                 {/* Columna Izquierda: Búsqueda y Carrito */}
                                 <div className="space-y-4">
                                     <form onSubmit={handleSearch} className="flex gap-2">
-                                        <Input ref={searchInputRef} placeholder="" value={searchId} onChange={(e) => setSearchId(e.target.value)} className="bg-white/80" />
-                                        <Button type="submit" size="icon" variant="destructive" className="text-black"><Search className="h-4 w-4" /></Button>
+                                        <Input ref={searchInputRef} placeholder="ID o nombre (ej: P1-25 o blusa)" value={searchId} onChange={(e) => setSearchId(e.target.value)} className="bg-white/80" />
+                                        <Button type="submit" size="icon" variant="destructive" className="text-black" disabled={isSearching}><Search className="h-4 w-4" /></Button>
                                     </form>
+                                    {nameResults && (
+                                        <div className="rounded-md border bg-white/80">
+                                            <div className="flex items-center justify-between px-3 py-2 text-sm font-semibold text-black">
+                                                <span>
+                                                    {nameResults.length === 30 ? 'Primeros 30 resultados' : `${nameResults.length} resultado(s)`} con stock. Toca uno para agregarlo:
+                                                </span>
+                                                <Button type="button" size="icon" variant="ghost" className="h-6 w-6" onClick={() => setNameResults(null)}>
+                                                    <X className="h-4 w-4" />
+                                                </Button>
+                                            </div>
+                                            <ul className="max-h-60 overflow-y-auto divide-y">
+                                                {nameResults.map(result => (
+                                                    <li key={result.path}>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => handlePickResult(result)}
+                                                            className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left text-sm hover:bg-black/5"
+                                                        >
+                                                            <span>
+                                                                <span className="font-semibold">{result.idPersonalizado}</span>{' '}
+                                                                {result.tipoPrenda} {result.genero} Talla {result.talla}
+                                                            </span>
+                                                            <span className="shrink-0 text-xs text-right">
+                                                                ${Number(result.precioIndividual || result.precioVenta || 0).toFixed(2)}
+                                                                <span className="block text-muted-foreground">Stock: {result.cantidad}</span>
+                                                            </span>
+                                                        </button>
+                                                    </li>
+                                                ))}
+                                            </ul>
+                                        </div>
+                                    )}
                                     <Card>
                                         <CardHeader><CardTitle className="text-lg">Canasta de Apartado</CardTitle></CardHeader>
                                         <CardContent>
@@ -1038,6 +1049,13 @@ export default function ApartadosPage() {
                              <div className="text-right">
                                 {cartPricing.discount > 0.009 && (
                                     <p className="text-sm text-green-700">Descuento por oferta: <span className="font-bold">-${cartPricing.discount.toFixed(2)}</span></p>
+                                )}
+                                {cartPricing.promosAplicadas.length > 0 && (
+                                    <div className="text-xs text-green-700">
+                                        {cartPricing.promosAplicadas.map(p => (
+                                            <p key={p.nombre}>{p.veces > 1 ? `${p.veces} × ` : ''}{p.nombre} (${p.precio.toFixed(2)})</p>
+                                        ))}
+                                    </div>
                                 )}
                                 <p className="text-sm">Total del Apartado: <span className="font-bold text-lg">${totalApartado.toFixed(2)}</span></p>
                                 <p className="text-sm">Saldo Pendiente: <span className="font-bold text-lg">${saldoPendienteCreacion.toFixed(2)}</span></p>

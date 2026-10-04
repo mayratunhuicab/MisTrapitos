@@ -62,6 +62,7 @@ import {
   serverTimestamp,
 } from "firebase/firestore";
 import { useToast } from '@/hooks/use-toast';
+import { PromosEspecialesSection } from './promos-especiales';
 
 // --- Types ---
 type Miembro = {
@@ -102,7 +103,11 @@ export default function OfertasPage() {
     setIsLoading(true);
     try {
       const snapshot = await getDocs(collection(firestore, 'gruposOferta'));
-      const data = snapshot.docs.map(d => ({ id: d.id, ...(d.data() as Omit<GrupoOferta, 'id'>) }));
+      // Las promociones especiales viven en la misma colección (tipo "especial") y se
+      // administran en su propia sección; aquí solo van los grupos "N por $X".
+      const data = snapshot.docs
+        .filter(d => d.data().tipo !== 'especial')
+        .map(d => ({ id: d.id, ...(d.data() as Omit<GrupoOferta, 'id'>) }));
       setGrupos(data);
     } catch (error) {
       console.error('Error loading grupos de oferta:', error);
@@ -307,10 +312,10 @@ export default function OfertasPage() {
       <div className="flex flex-col md:flex-row items-start justify-between gap-4">
         <div>
           <h1 className="text-3xl font-title text-white [text-shadow:_-2px_-2px_0_rgba(0,0,0,0.8),_2px_-2px_0_rgba(0,0,0,0.8),_-2px_2px_0_rgba(0,0,0,0.8),_2px_2px_0_rgba(0,0,0,0.8)]">
-            Grupos de Oferta
+            Ofertas
           </h1>
           <p className="text-xl text-white font-handwritten font-bold [text-shadow:_-1px_-1px_0_rgba(0,0,0,0.9),_1px_-1px_0_rgba(0,0,0,0.9),_-1px_1px_0_rgba(0,0,0,0.9),_1px_1px_0_rgba(0,0,0,0.9)]">
-            Combina la oferta de prendas específicas aunque sean de pacas distintas.
+            Promociones especiales y grupos de oferta entre prendas o pacas distintas.
           </p>
         </div>
         <Dialog open={isDialogOpen} onOpenChange={(open) => { setIsDialogOpen(open); if (!open) resetForm(); }}>
@@ -422,6 +427,8 @@ export default function OfertasPage() {
           </DialogContent>
         </Dialog>
       </div>
+
+      <PromosEspecialesSection />
 
       <Card style={{ backgroundColor: 'hsla(39, 44%, 84%, 0.8)', backdropFilter: 'blur(8px)' }}>
         <CardHeader>

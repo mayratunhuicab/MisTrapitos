@@ -65,6 +65,7 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { Calendar } from '@/components/ui/calendar';
 import { cn } from '@/lib/utils';
 import { redondearCentavos } from '@/lib/pagos';
+import { computeCartPricing, type PromoEspecial } from '@/lib/ofertas';
 
 type Prenda = {
   id: string; // Document ID
@@ -82,6 +83,8 @@ type Prenda = {
   // Si la prenda pertenece a un Grupo de Oferta (configurado en /dashboard/ofertas),
   // su oferta puede combinarse con la de OTRAS pacas que compartan el mismo grupo.
   grupoOfertaId?: string;
+  // Promociones especiales (combos) en las que participa esta prenda, por id.
+  promosEspeciales?: Record<string, PromoEspecial>;
 };
 
 
@@ -95,19 +98,6 @@ type CartItem = Prenda & {
   cantidadEnCarrito: number | '';
   precioAnulado?: number;
 };
-
-// Por defecto, una oferta ("N por $X") solo se combina entre prendas de la MISMA
-// paca (para que "2 shorts por $100" de la paca A no se mezcle por accidente con
-// "2 pantalones por $100" de la paca B solo porque coinciden los números). Si el
-// admin configuró explícitamente un Grupo de Oferta (colección `gruposOferta`,
-// gestionada en /dashboard/ofertas) para permitir mezclar prendas específicas de
-// distintas pacas, se usa ese grupo como llave en su lugar.
-function getOfferGroupKey(item: Pick<Prenda, 'pacaId' | 'ofertaCantidad' | 'ofertaPrecio' | 'grupoOfertaId'>): string {
-  if (item.grupoOfertaId) {
-    return `grupo:${item.grupoOfertaId}`;
-  }
-  return `paca:${item.pacaId}:${item.ofertaCantidad}-${item.ofertaPrecio}`;
-}
 
 // `crypto.randomUUID()` solo existe en un "contexto seguro" (https, o http://localhost).
 // Si la app se abre desde otro dispositivo por la IP de la red local (http:// sin ser
@@ -489,57 +479,13 @@ export default function SalesPage() {
     setCart(currentCart => currentCart.filter(item => item.cartId !== cartId));
   };
 
-    const cartSummary = useMemo(() => {
-        const rawSubtotal = cart.reduce((total, item) => total + calculateItemSubtotal(item), 0);
-
-        const offerGroups = new Map<string, CartItem[]>();
-        
-        // Group all individual item units that are eligible for offers
-        cart.forEach(item => {
-            if (item.ofertaCantidad && item.ofertaPrecio && item.precioAnulado === undefined) {
-                const offerKey = getOfferGroupKey(item);
-                if (!offerGroups.has(offerKey)) {
-                    offerGroups.set(offerKey, []);
-                }
-                // Add one entry for each unit of quantity
-                for (let i = 0; i < Number(item.cantidadEnCarrito); i++) {
-                     offerGroups.get(offerKey)!.push(item);
-                }
-            }
-        });
-
-        let totalDiscount = 0;
-
-        // Calculate discount for each offer group
-        for (const [, items] of offerGroups.entries()) {
-            const ofertaCantidad = items[0].ofertaCantidad!;
-            const ofertaPrecio = items[0].ofertaPrecio!;
-            const numBundles = Math.floor(items.length / ofertaCantidad);
-
-            if (numBundles > 0) {
-                const itemsInBundles = numBundles * ofertaCantidad;
-                
-                // To calculate the discount, we get the raw price of the items that form the bundle
-                // and subtract the offer price.
-                // We sort by price to give the customer the best deal, applying the offer to the most expensive items.
-                items.sort((a,b) => (b.precioIndividual ?? b.precioVenta) - (a.precioIndividual ?? a.precioVenta));
-
-                const rawPriceOfBundledItems = items.slice(0, itemsInBundles)
-                                                  .reduce((acc, it) => acc + (it.precioIndividual ?? it.precioVenta), 0);
-                
-                const dealPrice = numBundles * ofertaPrecio;
-                totalDiscount += rawPriceOfBundledItems - dealPrice;
-            }
-        }
-
-        const finalTotal = rawSubtotal - totalDiscount;
-
-        return {
-            rawSubtotal,
-            discount: totalDiscount,
-            total: finalTotal,
-        };
-    }, [cart]);
+    // Precios con ofertas ("N por $X" y promociones especiales): ver src/lib/ofertas.ts
+    const cartPricing = useMemo(() => computeCartPricing(cart), [cart]);
+    const cartSummary = {
+        rawSubtotal: cartPricing.rawSubtotal,
+        discount: cartPricing.discount,
+        total: cartPricing.total,
+    };
   
   const requiereComprobante = metodoPago === 'TRANSFERENCIA' || metodoPago === 'MIXTO';
   const mixtoTransferencia = Number(montoTransferenciaMixto) || 0;
@@ -584,56 +530,12 @@ export default function SalesPage() {
     
     setIsProcessing(true);
 
-    // --- Contained logic to determine the final list of items and prices ---
+    // --- Precio final de cada prenda (con ofertas aplicadas) para guardar en la venta ---
     const { totalVenta, itemsWithEffectivePrice } = (() => {
-        const allItemUnits: { item: CartItem, effectivePrice: number }[] = [];
-        const offerEligibleUnits: CartItem[] = [];
-
-        cart.forEach(item => {
-            const singlePrice = item.precioIndividual ?? item.precioVenta;
-            const cantidad = Number(item.cantidadEnCarrito) || 0;
-            
-            if (item.precioAnulado !== undefined) {
-                for (let i = 0; i < cantidad; i++) allItemUnits.push({ item, effectivePrice: item.precioAnulado });
-            } else if (item.ofertaCantidad && item.ofertaPrecio) {
-                for (let i = 0; i < cantidad; i++) offerEligibleUnits.push(item);
-            } else {
-                for (let i = 0; i < cantidad; i++) allItemUnits.push({ item, effectivePrice: singlePrice });
-            }
-        });
-
-        const offerGroups = new Map<string, CartItem[]>();
-        offerEligibleUnits.forEach(unit => {
-            const offerKey = getOfferGroupKey(unit);
-            if (!offerGroups.has(offerKey)) offerGroups.set(offerKey, []);
-            offerGroups.get(offerKey)!.push(unit);
-        });
-
-        for (const [, items] of offerGroups.entries()) {
-            const ofertaCantidad = items[0].ofertaCantidad!;
-            const ofertaPrecio = items[0].ofertaPrecio!;
-            const numBundles = Math.floor(items.length / ofertaCantidad);
-            
-            items.sort((a, b) => (b.precioIndividual ?? b.precioVenta) - (a.precioIndividual ?? a.precioVenta));
-
-            if (numBundles > 0) {
-                const effectivePrice = ofertaPrecio / ofertaCantidad;
-                const bundledItems = items.slice(0, numBundles * ofertaCantidad);
-                const remainingItems = items.slice(numBundles * ofertaCantidad);
-
-                bundledItems.forEach(item => allItemUnits.push({ item, effectivePrice }));
-                remainingItems.forEach(item => allItemUnits.push({ item, effectivePrice: item.precioIndividual ?? item.precioVenta }));
-            } else {
-                items.forEach(item => allItemUnits.push({ item, effectivePrice: item.precioIndividual ?? item.precioVenta }));
-            }
-        }
-        
         const finalItemsToSave = new Map<string, {prendaId: string, pacaId: string, idPersonalizado: string, tipoPrenda: string, genero: string, cantidad: number, precioVenta: number}>();
-        let finalTotal = 0;
 
-        for (const { item, effectivePrice } of allItemUnits) {
-            finalTotal += effectivePrice;
-            const key = `${item.id}-${effectivePrice}`;
+        for (const { item, effectivePrice } of cartPricing.pricedUnits) {
+            const key = `${item.pacaId}-${item.id}-${effectivePrice}`;
             if(finalItemsToSave.has(key)) {
                 finalItemsToSave.get(key)!.cantidad += 1;
             } else {
@@ -649,7 +551,7 @@ export default function SalesPage() {
             }
         }
 
-        return { totalVenta: finalTotal, itemsWithEffectivePrice: Array.from(finalItemsToSave.values()) };
+        return { totalVenta: cartPricing.total, itemsWithEffectivePrice: Array.from(finalItemsToSave.values()) };
     })();
 
     const ventaRef = doc(collection(firestore, "ventas"));
@@ -1075,6 +977,13 @@ export default function SalesPage() {
                                     -${cartSummary.discount.toFixed(2)}
                                 </span>
                             </div>
+                            {cartPricing.promosAplicadas.length > 0 && (
+                                <div className="font-sans text-sm text-green-700 text-right">
+                                    {cartPricing.promosAplicadas.map(p => (
+                                        <p key={p.nombre}>{p.veces > 1 ? `${p.veces} × ` : ''}{p.nombre} (${p.precio.toFixed(2)})</p>
+                                    ))}
+                                </div>
+                            )}
                         </>
                     )}
                      <div className="flex justify-between items-center font-sans text-3xl text-black">

@@ -109,6 +109,8 @@ type Prenda = {
   // (configurado en /dashboard/ofertas) que permite combinar su oferta con
   // prendas de OTRAS pacas. Se gestiona únicamente desde esa pantalla.
   grupoOfertaId?: string;
+  // Promociones especiales (combos) en las que participa, configuradas en /dashboard/ofertas.
+  promosEspeciales?: Record<string, { id: string; nombre: string; precio: number }>;
 };
 
 
@@ -1314,6 +1316,13 @@ export default function PacaDetailPage() {
                                       </Badge>
                                   </div>
                               )}
+                              {Object.values(prenda.promosEspeciales || {}).map(promo => (
+                                  <div key={promo.id} className="mt-1">
+                                      <Badge variant="secondary" className="text-[10px] font-normal whitespace-nowrap">
+                                          Promo: {promo.nombre} ${promo.precio}
+                                      </Badge>
+                                  </div>
+                              ))}
                           </TableCell>
                           <TableCell className="text-right">
                             <DropdownMenu>
